@@ -99,6 +99,25 @@ export function frameUrl(id: string, sceneNum: number, filename: string): string
   return `${BASE}/projects/${id}/frames/${sceneNum}/${filename}`;
 }
 
+export async function fetchSkillFiles(): Promise<string[]> {
+  const res = await fetch(`${BASE}/skills`);
+  return res.json();
+}
+
+export async function fetchSkillFile(path: string): Promise<{ path: string; content: string }> {
+  const res = await fetch(`${BASE}/skills/${path}`);
+  if (!res.ok) throw new Error("Not found");
+  return res.json();
+}
+
+export async function saveSkillFile(path: string, content: string): Promise<void> {
+  await fetch(`${BASE}/skills/${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}
+
 export function createWebSocket(projectId: string, onEvent: (e: PipelineEvent) => void): WebSocket {
   const ws = new WebSocket(`ws://localhost:8000/ws/${projectId}`);
   ws.onmessage = (msg) => {

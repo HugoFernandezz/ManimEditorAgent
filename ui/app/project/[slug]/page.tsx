@@ -1,210 +1,207 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { fetchProject, createWebSocket, videoUrl, frameUrl, type Project, type PipelineEvent } from "@/lib/api";
-import { ArrowLeft, CheckCircle, XCircle, AlertCircle, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  fetchProject, createWebSocket, videoUrl,
+  type Project, type PipelineEvent,
+} from "@/lib/api";
+import {
+  PipelineView, INITIAL_PIPELINE, type PipelineState, type AgentStatus,
+} from "@/components/pipeline-view";
 import { Button } from "@/components/ui/button";
+import { ChevronDown, ChevronRight, ThumbsUp, Play } from "lucide-react";
 
-type Step = {
-  id: string;
-  label: string;
-  status: "pending" | "running" | "ok" | "error" | "degraded";
-};
+/* Map pipeline events → agent status updates */
+function applyEvent(state: PipelineState, e: PipelineEvent): PipelineState {
+  const next = { ...state };
+  const { kind, payload } = e;
 
-const PIPELINE_STEPS: Step[] = [
-  { id: "env", label: "Entorno", status: "pending" },
-  { id: "researcher", label: "Investigación de plugins", status: "pending" },
-  { id: "planner", label: "Planificación", status: "pending" },
-  { id: "scenes", label: "Escenas", status: "pending" },
-  { id: "narrator", label: "Narración", status: "pending" },
-  { id: "editor", label: "Edición final", status: "pending" },
-];
+  const setAgent = (id: keyof PipelineState, status: AgentStatus, detail?: string) => {
+    next[id] = { status, detail };
+  };
 
-function StepIcon({ status }: { status: Step["status"] }) {
-  if (status === "running") return <Loader2 className="w-4 h-4 animate-spin text-blue-400" />;
-  if (status === "ok") return <CheckCircle className="w-4 h-4 text-green-400" />;
-  if (status === "error") return <XCircle className="w-4 h-4 text-red-400" />;
-  if (status === "degraded") return <AlertCircle className="w-4 h-4 text-yellow-400" />;
-  return <div className="w-4 h-4 rounded-full border border-zinc-600" />;
+  if (kind === "env_check_ok")    setAgent("env" as any, "ok");
+  if (kind === "env_check_failed") setAgent("env" as any, "error", payload.message as string);
+
+  if (kind === "agent_started") {
+    const a = payload.agent as string;
+    if (a === "researcher") setAgent("researcher", "running");
+    if (a === "planner")    setAgent("planner",    "running");
+    if (a === "narrator")   setAgent("narrator",   "running");
+    if (a === "editor")     setAgent("editor",     "running");
+    if (a === "curator")    setAgent("curator",    "running");
+    if (a === "coder")      setAgent("coder",      "running");
+    if (a === "visual_qa")  setAgent("visual_qa",  "running");
+  }
+
+  if (kind === "plugins_proposed") {
+    setAgent("researcher", "ok");
+    setAgent("plugins", "waiting", "Esperando aprobación");
+  }
+  if (kind === "plugins_installed") setAgent("plugins", "ok");
+
+  if (kind === "outline_ready") setAgent("planner", "ok");
+  if (kind === "render_ok")     setAgent("coder",   "ok");
+  if (kind === "render_failed") setAgent("coder",   "degraded");
+  if (kind === "qa_ok")         setAgent("visual_qa", "ok");
+  if (kind === "qa_issue")      setAgent("visual_qa", "running", `Cycle ${payload.cycle}`);
+  if (kind === "qa_degraded")   setAgent("visual_qa", "degraded");
+  if (kind === "narration_ready") setAgent("narrator", "ok");
+  if (kind === "edit_done")     setAgent("editor",  "ok");
+  if (kind === "curator_done")  setAgent("curator", "ok");
+
+  if (kind === "error") {
+    // Mark the first running agent as errored
+    (Object.keys(next) as (keyof PipelineState)[]).forEach((k) => {
+      if (next[k].status === "running") next[k] = { status: "error" };
+    });
+  }
+
+  return next;
 }
 
 export default function ProjectPage() {
   const params = useParams();
-  const slug = params.slug as string;
-  const [project, setProject] = useState<Project | null>(null);
-  const [steps, setSteps] = useState<Step[]>(PIPELINE_STEPS.map(s => ({ ...s })));
-  const [logs, setLogs] = useState<string[]>([]);
-  const [outline, setOutline] = useState("");
-  const [sceneQA, setSceneQA] = useState<Record<number, string>>({});
-  const [expandedScene, setExpandedScene] = useState<number | null>(null);
+  const router = useRouter();
+  const slug   = params.slug as string;
+
+  const [project,  setProject]  = useState<Project | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineState>(INITIAL_PIPELINE);
+  const [logs,     setLogs]     = useState<string[]>([]);
+  const [outline,  setOutline]  = useState("");
+  const [qaNotes,  setQaNotes]  = useState<Record<number, string>>({});
+  const [expanded, setExpanded] = useState<number | null>(null);
   const logsRef = useRef<HTMLDivElement>(null);
-
-  const setStep = (id: string, status: Step["status"]) => {
-    setSteps((prev) => prev.map((s) => s.id === id ? { ...s, status } : s));
-  };
-
-  const addLog = (msg: string) => {
-    setLogs((prev) => [...prev.slice(-199), msg]);
-  };
 
   useEffect(() => {
     fetchProject(slug).then(setProject);
-    const ws = createWebSocket(slug, (event: PipelineEvent) => {
-      handleEvent(event);
-    });
+    const ws = createWebSocket(slug, handleEvent);
     return () => ws.close();
   }, [slug]);
 
   useEffect(() => {
-    if (logsRef.current) {
-      logsRef.current.scrollTop = logsRef.current.scrollHeight;
-    }
+    if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight;
   }, [logs]);
 
   function handleEvent(e: PipelineEvent) {
-    const { kind, payload } = e;
-    addLog(`[${kind}] ${JSON.stringify(payload).slice(0, 120)}`);
-
-    if (kind === "env_check_ok") setStep("env", "ok");
-    if (kind === "env_check_failed") setStep("env", "error");
-    if (kind === "agent_started") {
-      const agent = payload.agent as string;
-      if (agent === "researcher") setStep("researcher", "running");
-      if (agent === "planner") setStep("planner", "running");
-      if (agent === "narrator") setStep("narrator", "running");
-      if (agent === "editor") setStep("editor", "running");
-      if (agent === "coder" || agent === "visual_qa") setStep("scenes", "running");
-    }
-    if (kind === "plugins_proposed") setStep("researcher", "ok");
-    if (kind === "outline_ready") {
-      setStep("planner", "ok");
-      setOutline((payload.outline as string) ?? "");
-    }
-    if (kind === "qa_ok") setSceneQA((prev) => ({ ...prev, [payload.scene as number]: "ok" }));
-    if (kind === "qa_issue") setSceneQA((prev) => ({ ...prev, [payload.scene as number]: (payload.notes as string) ?? "" }));
-    if (kind === "qa_degraded") setSceneQA((prev) => ({ ...prev, [payload.scene as number]: "degraded" }));
-    if (kind === "narration_ready") setStep("narrator", "ok");
-    if (kind === "edit_done") {
-      setStep("editor", "ok");
-      fetchProject(slug).then(setProject);
-    }
-    if (kind === "error") {
-      setSteps((prev) => prev.map((s) => s.status === "running" ? { ...s, status: "error" } : s));
-    }
+    setPipeline((prev) => applyEvent(prev, e));
+    setLogs((prev) => [...prev.slice(-299), `[${e.kind}] ${JSON.stringify(e.payload).slice(0, 100)}`]);
+    if (e.kind === "outline_ready") setOutline((e.payload.outline as string) ?? "");
+    if (e.kind === "qa_issue")  setQaNotes((p) => ({ ...p, [e.payload.scene as number]: e.payload.notes as string }));
+    if (e.kind === "qa_ok")     setQaNotes((p) => ({ ...p, [e.payload.scene as number]: "ok" }));
+    if (e.kind === "qa_degraded") setQaNotes((p) => ({ ...p, [e.payload.scene as number]: "degraded" }));
+    if (e.kind === "edit_done") fetchProject(slug).then(setProject);
   }
 
-  const canReview = project?.status === "awaiting_review";
+  const canReview  = project?.status === "awaiting_review";
   const canPlugins = project?.status === "awaiting_plugins";
+  const isCurated  = project?.status === "curated";
 
   return (
-    <div className="space-y-6">
-      <Link href="/" className="inline-flex items-center gap-2 text-zinc-400 hover:text-zinc-100 text-sm">
-        <ArrowLeft className="w-4 h-4" /> Volver
-      </Link>
+    <div className="space-y-6 max-w-full">
+      {/* Pipeline visualization */}
+      <section>
+        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">
+          Flujo de agentes
+        </h3>
+        <PipelineView
+          pipeline={pipeline}
+          projectId={slug}
+          onPluginsClick={() => router.push(`/project/${slug}/plugins`)}
+        />
+      </section>
 
-      {project && (
-        <div>
-          <h2 className="text-xl font-bold line-clamp-2">{project.idea}</h2>
-          <p className="text-sm text-zinc-400 mt-1">{project.id} · {project.lang.toUpperCase()} · {project.target_length}</p>
+      {/* Action buttons */}
+      {(canReview || canPlugins || isCurated) && (
+        <div className="flex gap-3">
+          {canPlugins && (
+            <Link href={`/project/${slug}/plugins`}>
+              <Button className="gap-2 bg-yellow-600 hover:bg-yellow-500">
+                Revisar plugins propuestos →
+              </Button>
+            </Link>
+          )}
+          {canReview && (
+            <Link href={`/project/${slug}/review`}>
+              <Button className="gap-2 bg-purple-600 hover:bg-purple-500">
+                <Play className="w-4 h-4" /> Revisar y aprobar video
+              </Button>
+            </Link>
+          )}
+          {isCurated && (
+            <Link href={`/project/${slug}/learnings`}>
+              <Button variant="outline" className="gap-2">
+                Ver aprendizajes del curator →
+              </Button>
+            </Link>
+          )}
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Stepper */}
+      {/* Two-column: outline + video */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {/* Outline */}
+        {outline && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-zinc-800">
+              <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wide">Outline</p>
+            </div>
+            <pre className="p-4 text-xs text-zinc-300 whitespace-pre-wrap font-mono leading-relaxed max-h-72 overflow-y-auto">
+              {outline}
+            </pre>
+          </div>
+        )}
+
+        {/* Video */}
+        {project?.final_video && (
+          <div className="rounded-xl overflow-hidden border border-zinc-800 bg-black">
+            <video controls className="w-full" src={videoUrl(slug)} />
+          </div>
+        )}
+      </div>
+
+      {/* QA per scene */}
+      {Object.keys(qaNotes).length > 0 && (
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">Pipeline</h3>
-          {steps.map((step, i) => (
-            <div key={step.id} className="flex items-center gap-3 py-2">
-              <StepIcon status={step.status} />
-              <span className={`text-sm ${step.status === "pending" ? "text-zinc-500" : "text-zinc-100"}`}>
-                {step.label}
-              </span>
+          <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">QA por escena</h3>
+          {Object.entries(qaNotes).map(([num, notes]) => (
+            <div key={num} className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+              <button
+                onClick={() => setExpanded(expanded === +num ? null : +num)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-zinc-800/60 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-1.5 h-1.5 rounded-full ${
+                    notes === "ok" ? "bg-green-400" : notes === "degraded" ? "bg-yellow-400" : "bg-blue-400"
+                  }`} />
+                  <span className="text-xs font-medium">Escena {num}</span>
+                  <span className="text-xs text-zinc-500">
+                    {notes === "ok" ? "Sin problemas" : notes === "degraded" ? "Degraded" : "Issues detectados"}
+                  </span>
+                </div>
+                {expanded === +num ? <ChevronDown className="w-3 h-3 text-zinc-500" /> : <ChevronRight className="w-3 h-3 text-zinc-500" />}
+              </button>
+              {expanded === +num && notes !== "ok" && (
+                <pre className="px-4 pb-3 text-[11px] text-zinc-400 whitespace-pre-wrap font-mono border-t border-zinc-800">
+                  {notes}
+                </pre>
+              )}
             </div>
           ))}
-
-          <div className="pt-4 space-y-2">
-            {canPlugins && (
-              <Link href={`/project/${slug}/plugins`}>
-                <Button size="sm" className="w-full bg-yellow-600 hover:bg-yellow-700">
-                  Revisar plugins →
-                </Button>
-              </Link>
-            )}
-            {canReview && (
-              <Link href={`/project/${slug}/review`}>
-                <Button size="sm" className="w-full bg-purple-600 hover:bg-purple-700">
-                  Revisar video →
-                </Button>
-              </Link>
-            )}
-            {project?.status === "curated" && (
-              <Link href={`/project/${slug}/learnings`}>
-                <Button size="sm" variant="outline" className="w-full">
-                  Ver aprendizajes →
-                </Button>
-              </Link>
-            )}
-          </div>
         </div>
+      )}
 
-        {/* Main content */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Video preview */}
-          {project?.final_video && (
-            <div className="rounded-xl overflow-hidden border border-zinc-800">
-              <video controls className="w-full" src={videoUrl(slug)}>
-                Tu navegador no soporta video HTML5.
-              </video>
-            </div>
-          )}
-
-          {/* Outline */}
-          {outline && (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-              <h4 className="text-sm font-semibold mb-2">Outline del video</h4>
-              <pre className="text-xs text-zinc-300 whitespace-pre-wrap font-mono leading-relaxed">
-                {outline}
-              </pre>
-            </div>
-          )}
-
-          {/* Scene QA */}
-          {Object.keys(sceneQA).length > 0 && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-semibold">QA por escena</h4>
-              {Object.entries(sceneQA).map(([num, notes]) => (
-                <div key={num} className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
-                  <button
-                    onClick={() => setExpandedScene(expandedScene === +num ? null : +num)}
-                    className="w-full flex items-center justify-between px-4 py-2 text-sm hover:bg-zinc-800 transition-colors"
-                  >
-                    <span>Escena {num} — {notes === "ok" ? "✓ OK" : notes === "degraded" ? "⚠ Degraded" : "Issues"}</span>
-                    {expandedScene === +num ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                  </button>
-                  {expandedScene === +num && notes !== "ok" && (
-                    <pre className="px-4 pb-3 text-xs text-zinc-400 whitespace-pre-wrap font-mono">
-                      {notes}
-                    </pre>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Log console */}
-          <div className="bg-black border border-zinc-800 rounded-xl">
-            <div className="px-4 py-2 border-b border-zinc-800 text-xs text-zinc-500 font-mono">Pipeline logs</div>
-            <div
-              ref={logsRef}
-              className="h-48 overflow-y-auto p-4 space-y-1 font-mono text-xs"
-            >
-              {logs.length === 0 && <span className="text-zinc-600">Esperando eventos...</span>}
-              {logs.map((l, i) => (
-                <div key={i} className="text-zinc-400">{l}</div>
-              ))}
-            </div>
-          </div>
+      {/* Log console */}
+      <div className="bg-black border border-zinc-800 rounded-xl overflow-hidden">
+        <div className="px-4 py-2 border-b border-zinc-800">
+          <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-wide">Pipeline logs</p>
+        </div>
+        <div ref={logsRef} className="h-36 overflow-y-auto p-3 space-y-0.5 font-mono text-[11px]">
+          {logs.length === 0
+            ? <span className="text-zinc-600">Esperando eventos del pipeline...</span>
+            : logs.map((l, i) => <div key={i} className="text-zinc-500">{l}</div>)
+          }
         </div>
       </div>
     </div>

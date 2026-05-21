@@ -196,6 +196,51 @@ async def get_frame_image(project_id: str, scene_num: int, filename: str):
     return FileResponse(str(img), media_type="image/png")
 
 
+# ── Skill file editor ────────────────────────────────────────────────────────
+
+SKILL_ROOT = Path(__file__).parent.parent / ".agents" / "skills" / "manim"
+_ALLOWED_SKILL_FILES = {
+    "SKILL.md",
+    "references/api-cheatsheet.md",
+    "references/troubleshooting.md",
+    "references/3b1b-style.md",
+    "references/narration.md",
+    "references/manimgl-diff.md",
+    "templates/basic.py",
+    "templates/math.py",
+    "templates/threed.py",
+    "templates/voiceover.py",
+}
+
+
+class SkillUpdateRequest(BaseModel):
+    content: str
+
+
+@app.get("/skills")
+async def list_skill_files() -> list[str]:
+    return sorted(_ALLOWED_SKILL_FILES)
+
+
+@app.get("/skills/{file_path:path}")
+async def get_skill_file(file_path: str) -> dict:
+    if file_path not in _ALLOWED_SKILL_FILES:
+        raise HTTPException(403, "File not in allowlist")
+    target = SKILL_ROOT / file_path
+    if not target.exists():
+        raise HTTPException(404, "File not found")
+    return {"path": file_path, "content": target.read_text(encoding="utf-8")}
+
+
+@app.put("/skills/{file_path:path}")
+async def update_skill_file(file_path: str, req: SkillUpdateRequest) -> dict:
+    if file_path not in _ALLOWED_SKILL_FILES:
+        raise HTTPException(403, "File not in allowlist")
+    target = SKILL_ROOT / file_path
+    target.write_text(req.content, encoding="utf-8")
+    return {"ok": True}
+
+
 # ── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{project_id}")
