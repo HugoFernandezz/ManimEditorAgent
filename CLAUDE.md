@@ -296,6 +296,58 @@ El usuario debe estar autenticado en Claude Code (`claude auth`) para que `claud
 
 ---
 
+## Capa de harness engineering (backend/harness/)
+
+Capa que envuelve a todos los agentes. Implementa los principios de *awesome-harness-engineering*:
+
+| Módulo | Responsabilidad | Principio |
+|--------|-----------------|-----------|
+| `events.py` | `AgentEvent` + `EventLog` event-sourced | 12-Factor #5 |
+| `store.py` | `events.jsonl` atómico (resumibilidad tras crash) | Anthropic checkpointing |
+| `runner.py` | `call_agent()` con retry exponencial + validator + métricas | 12-Factor #9 |
+| `guardrails.py` | Validadores estructurales (JSON, YAML, Python AST) | Safe autonomy |
+| `prompts.py` | Templates versionados (`v2`) y parametrizados | 12-Factor #2 |
+| `graders.py` | Cascada deterministic → LLM-judge | Anthropic eval taxonomy |
+| `evals.py` | Suite offline con `pass@1` / `pass^k` | Non-determinism handling |
+| `telemetry.py` | Métricas OTel gen-ai (cost, latency, tokens) | Observabilidad |
+
+### Cómo añadir un agente nuevo
+
+```python
+# 1. Define el prompt en harness/prompts.py:
+MY_AGENT = Prompt(name="my_agent", version="v1", system="...", user_template="$x $y")
+
+# 2. Define un validator (opcional pero recomendado):
+def _validator(raw: str) -> tuple[bool, str]:
+    return ("expected_marker" in raw, "missing marker")
+
+# 3. El agente en sí queda en 4 líneas:
+def run(project_id: str, x: str, y: str) -> str:
+    return call_agent(
+        project_id=project_id, agent="my_agent",
+        prompt=MY_AGENT.render(x=x, y=y), system=MY_AGENT.system,
+        validator=_validator,
+    )
+```
+
+### Endpoints de telemetría
+
+- `GET /projects/{id}/trace` — log completo de eventos (~JSONL en memoria)
+- `GET /projects/{id}/metrics` — calls/retries/tokens/cost por agente
+- `GET /projects/{id}/grades` — resultados de todos los graders
+
+### Ejecutar evals
+
+```bash
+cd backend
+python -m harness.evals run --repeats 3        # pass@3 / pass^3
+python -m harness.evals run --only fourier_intro
+```
+
+Resultados en `evals/runs/<timestamp>/{results.json, summary.json}`.
+
+---
+
 ## Cosas pendientes / fuera de alcance actual
 
 - [ ] Backend real de voz clonada (XTTS v2, F5-TTS, Piper) — `tts_adapter.py` tiene la interfaz lista
