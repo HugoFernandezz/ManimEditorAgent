@@ -1,7 +1,8 @@
 """Pipeline state machine for one video project.
 
-Each call to run_pipeline is isolated: fresh Anthropic client, no shared state.
-Events are emitted via an async queue consumed by the WebSocket endpoint.
+Each pipeline run is isolated — no shared state between videos.
+Agents call the `claude -p` CLI, which uses the Claude Pro subscription.
+Events are emitted synchronously from a worker thread via the Emit callback.
 """
 from __future__ import annotations
 import re
@@ -10,11 +11,8 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-import anthropic
-
 from events import PipelineEvent
 from project_store import project_path, update_manifest, load_manifest
-from sessions import new_client
 
 SKILL_ROOT = Path(__file__).parent.parent / ".agents" / "skills" / "manim"
 CHECK_ENV = SKILL_ROOT / "scripts" / "check_env.py"
@@ -28,7 +26,6 @@ def run_pipeline(project_id: str, emit: Emit) -> None:
     """Run env check + researcher, then pause awaiting plugin approval."""
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
-    client = new_client()
 
     def ev(kind, **payload):
         emit(PipelineEvent(kind=kind, project_id=project_id, payload=payload))
@@ -48,7 +45,7 @@ def run_pipeline(project_id: str, emit: Emit) -> None:
         # --- 2. RESEARCHER ---
         ev("agent_started", agent="researcher")
         from agents import researcher
-        plugins = researcher.run(client, manifest["idea"], proj)
+        plugins = researcher.run(manifest["idea"], proj)
         ev("plugins_proposed", plugins=plugins)
         update_manifest(project_id, {"status": "awaiting_plugins", "plugins_proposal": plugins})
         # Pipeline pauses — client calls POST /projects/{id}/plugins/confirm to resume
@@ -62,7 +59,6 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
     """Continue pipeline after user approves plugins."""
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
-    client = new_client()
 
     def ev(kind, **payload):
         emit(PipelineEvent(kind=kind, project_id=project_id, payload=payload))
@@ -83,7 +79,6 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
         ev("agent_started", agent="planner")
         from agents import planner
         outline = planner.run(
-            client,
             manifest["idea"],
             proj,
             lang=manifest.get("lang", "es"),
@@ -104,7 +99,7 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
             # --- CODER ---
             ev("agent_started", agent="coder", scene=i)
             from agents import coder
-            scene_file, code_status = coder.run(client, i, scene_desc, outline, proj)
+            scene_file, code_status = coder.run(i, scene_desc, outline, proj)
             scene_files.append(scene_file)
 
             if code_status == "failed":
@@ -126,7 +121,7 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
             while qa_cycles < MAX_QA_CYCLES:
                 ev("agent_started", agent="visual_qa", scene=i, cycle=qa_cycles + 1)
                 from agents import visual_qa
-                qa_result = visual_qa.run(client, i, scene_desc, scene_file, frames, proj)
+                qa_result = visual_qa.run(i, scene_desc, scene_file, frames, proj)
                 if qa_result["status"] == "ok":
                     ev("qa_ok", scene=i)
                     break
@@ -139,7 +134,7 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
 
                 # Coder applies QA fix
                 ev("agent_started", agent="coder", scene=i, phase="qa_fix")
-                _apply_qa_fix(client, scene_file, qa_result["raw"], outline, scene_desc)
+                _apply_qa_fix(scene_file, qa_result["raw"])
                 preview_mp4, duration = _render_preview(scene_file, i, proj)
                 scene_durations[i - 1] = duration
                 frames = _extract_frames(preview_mp4, i, proj)
@@ -148,7 +143,6 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
         ev("agent_started", agent="narrator")
         from agents import narrator
         audio_files = narrator.run(
-            client,
             outline,
             scene_durations,
             proj,
@@ -172,7 +166,6 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
 
 def run_curator(project_id: str, emit: Emit) -> None:
     proj = project_path(project_id)
-    client = new_client()
 
     def ev(kind, **payload):
         emit(PipelineEvent(kind=kind, project_id=project_id, payload=payload))
@@ -180,7 +173,7 @@ def run_curator(project_id: str, emit: Emit) -> None:
     try:
         ev("agent_started", agent="curator")
         from agents import curator
-        result = curator.run(client, proj)
+        result = curator.run(proj)
         ev("curator_done", learnings=result.get("learnings", "")[:300], patches=list(result.get("patches", {}).keys()))
         update_manifest(project_id, {"status": "curated"})
     except Exception as e:
@@ -240,10 +233,10 @@ def _get_scene_name(scene_file: Path) -> str:
     return m.group(1) if m else "Scene"
 
 
-def _apply_qa_fix(client: anthropic.Anthropic, scene_file: Path, qa_notes: str, outline: str, scene_desc: str) -> None:
-    from agents.coder import _fix, _load_skill_context, _strip_fences
-    skill_ctx = _load_skill_context()
+def _apply_qa_fix(scene_file: Path, qa_notes: str) -> None:
+    from agents.coder import _fix, _skill_context, _strip_fences
+    skill_ctx = _skill_context()
     scene_name = _get_scene_name(scene_file)
     code = scene_file.read_text(encoding="utf-8")
-    fixed = _fix(client, skill_ctx, code, f"QA feedback:\n{qa_notes}", scene_name)
+    fixed = _fix(skill_ctx, code, f"QA feedback:\n{qa_notes}", scene_name)
     scene_file.write_text(fixed, encoding="utf-8")

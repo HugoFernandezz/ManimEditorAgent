@@ -2,36 +2,32 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-import anthropic
+from claude_runner import run_with_tools
 
 SYSTEM = """\
-You are a Manim research assistant. Given a video idea, search the Manim Community plugin registry
-(https://plugins.manim.community/) and the general web for Manim Community Edition plugins
-that would help produce the best animation for this specific topic.
+You are a Manim research assistant. Search the Manim Community plugin registry
+(https://plugins.manim.community/) and the web for Manim Community Edition plugins
+relevant to the given video idea.
 
-For each plugin you find that seems relevant:
-- name: pip package name
-- description: one sentence on what it adds
-- repo: GitHub URL
-- relevance: why it helps for this specific idea
+For each plugin found, return a JSON array with objects containing:
+  name (pip package name), description (one sentence), repo (GitHub URL), relevance (why it helps).
 
-Return a JSON array of plugin objects. If nothing relevant is found, return an empty array [].
-Only include plugins you are confident exist and are installable via pip.
+Return ONLY a valid JSON array. If nothing relevant, return [].
+Only include plugins you confirmed exist and are pip-installable.
 """
 
 
-def run(client: anthropic.Anthropic, idea: str, project_path: Path) -> list[dict]:
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
+def run(idea: str, project_path: Path) -> list[dict]:
+    response = run_with_tools(
+        prompt=f"Video idea: {idea}\n\nSearch for relevant Manim plugins and return a JSON array.",
         system=SYSTEM,
-        messages=[{"role": "user", "content": f"Video idea: {idea}\n\nFind relevant Manim plugins."}],
+        model="sonnet",
+        tools="WebSearch,WebFetch",
+        timeout=120,
     )
-    raw = response.content[0].text.strip()
-    # Extract JSON from the response
-    start = raw.find("[")
-    end = raw.rfind("]") + 1
-    plugins = json.loads(raw[start:end]) if start != -1 else []
+    start = response.find("[")
+    end = response.rfind("]") + 1
+    plugins: list[dict] = json.loads(response[start:end]) if start != -1 else []
     (project_path / "plugins_proposal.json").write_text(
         json.dumps(plugins, ensure_ascii=False, indent=2), encoding="utf-8"
     )
