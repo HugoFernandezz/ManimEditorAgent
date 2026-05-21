@@ -1,9 +1,13 @@
-"""Coder agent: writes a Manim Scene file for a given scene description."""
+"""Coder — writes ManimCE scene file, with embedded verify+fix loop."""
 from __future__ import annotations
 import re
 import subprocess
+import sys
 from pathlib import Path
-from claude_runner import run_text
+from harness.runner import call_agent, AgentCallFailed
+from harness.prompts import CODER_GENERATE, CODER_FIX
+from harness.guardrails import python_code_well_formed
+from harness.graders import grade_scene_renderable, emit_grade
 
 SKILL_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills" / "manim"
 RENDER_VERIFY = SKILL_ROOT / "scripts" / "render_verify.py"
@@ -29,79 +33,78 @@ def _pick_template(scene_desc: str) -> str:
     return (SKILL_ROOT / "templates" / tpl).read_text(encoding="utf-8")
 
 
-SYSTEM = """\
-You are an expert ManimCE animator. Write clean, correct Manim Community Edition Python scenes.
-Follow every rule in the provided skill context, especially the anti-patterns list.
-Use the template as your starting point — modify it, do not write from scratch.
-Output ONLY the Python code — no explanation, no markdown fences.
-The class name must be exactly the SceneName specified.
-"""
+def _strip_fences(text: str) -> str:
+    text = re.sub(r"^```(?:python)?\n?", "", text.strip())
+    return re.sub(r"\n?```$", "", text).strip()
+
+
+def _code_validator(raw: str) -> tuple[bool, str]:
+    code = _strip_fences(raw)
+    return python_code_well_formed(code)
 
 
 def run(
-    scene_number: int,
-    scene_desc: str,
-    outline: str,
-    project_path: Path,
-    scene_name: str | None = None,
+    project_id: str, scene_number: int, scene_desc: str,
+    outline: str, project_path: Path, scene_name: str | None = None,
 ) -> tuple[Path, str]:
     skill_ctx = _skill_context()
     template = _pick_template(scene_desc)
     if scene_name is None:
         scene_name = f"Scene{scene_number:02d}"
-
     scene_file = project_path / "scenes" / f"scene_{scene_number:02d}.py"
 
-    code = _generate(skill_ctx, template, scene_desc, outline, scene_name)
-    scene_file.write_text(code, encoding="utf-8")
+    # Generate
+    raw = call_agent(
+        project_id=project_id, agent="coder", scene=scene_number,
+        prompt=CODER_GENERATE.render(
+            skill_ctx=skill_ctx, template=template, outline=outline,
+            scene_desc=scene_desc, scene_name=scene_name,
+        ),
+        system=CODER_GENERATE.system, model="opus",
+        timeout=180, max_attempts=3, validator=_code_validator,
+    )
+    scene_file.write_text(_strip_fences(raw), encoding="utf-8")
 
-    for attempt in range(1, MAX_FIX_CYCLES + 1):
-        ok, error_msg = _render_verify(scene_file, scene_name)
-        if ok:
+    # Verify + fix loop (embedded grader — Anthropic verification loops)
+    for cycle in range(1, MAX_FIX_CYCLES + 1):
+        grade = grade_scene_renderable(scene_file, scene_name)
+        emit_grade(project_id, "coder", scene_number, grade)
+        if grade.passed:
             return scene_file, "ok"
-        if attempt == MAX_FIX_CYCLES:
+        if cycle == MAX_FIX_CYCLES:
             break
-        code = _fix(skill_ctx, code, error_msg, scene_name)
-        scene_file.write_text(code, encoding="utf-8")
-
+        # Compact error into next prompt (12-Factor #9)
+        current = scene_file.read_text(encoding="utf-8")
+        fixed = call_agent(
+            project_id=project_id, agent="coder.fix", scene=scene_number,
+            prompt=CODER_FIX.render(
+                skill_ctx=skill_ctx, code=current,
+                error_msg=grade.details, scene_name=scene_name,
+            ),
+            system=CODER_FIX.system, model="opus",
+            timeout=180, max_attempts=2, validator=_code_validator,
+        )
+        scene_file.write_text(_strip_fences(fixed), encoding="utf-8")
     return scene_file, "failed"
 
 
-def _generate(skill_ctx, template, scene_desc, outline, scene_name) -> str:
-    prompt = (
-        f"SKILL CONTEXT:\n{skill_ctx}\n\n"
-        f"TEMPLATE TO ADAPT:\n{template}\n\n"
-        f"FULL OUTLINE (context):\n{outline}\n\n"
-        f"SCENE DESCRIPTION:\n{scene_desc}\n\n"
-        f"SceneName: {scene_name}\n\n"
-        "Write the complete scene .py file."
+# Backward compat alias (used by orchestrator._apply_qa_fix in legacy code path)
+def fix_with_feedback(project_id: str, scene_file: Path, qa_notes: str, scene_number: int) -> None:
+    skill_ctx = _skill_context()
+    scene_name = _extract_scene_name(scene_file)
+    current = scene_file.read_text(encoding="utf-8")
+    fixed = call_agent(
+        project_id=project_id, agent="coder.fix", scene=scene_number,
+        prompt=CODER_FIX.render(
+            skill_ctx=skill_ctx, code=current,
+            error_msg=f"Visual QA feedback:\n{qa_notes}", scene_name=scene_name,
+        ),
+        system=CODER_FIX.system, model="opus",
+        timeout=180, max_attempts=2, validator=_code_validator,
     )
-    return _strip_fences(run_text(prompt, system=SYSTEM, model="opus", timeout=180))
+    scene_file.write_text(_strip_fences(fixed), encoding="utf-8")
 
 
-def _fix(skill_ctx, code, error_msg, scene_name) -> str:
-    prompt = (
-        f"SKILL CONTEXT (troubleshooting):\n{skill_ctx}\n\n"
-        f"CURRENT CODE:\n{code}\n\n"
-        f"RENDER ERROR:\n{error_msg}\n\n"
-        f"SceneName must remain: {scene_name}\n\n"
-        "Fix the code. Output only the corrected Python."
-    )
-    return _strip_fences(run_text(prompt, system=SYSTEM, model="opus", timeout=180))
-
-
-def _render_verify(scene_file: Path, scene_name: str) -> tuple[bool, str]:
-    import sys
-    result = subprocess.run(
-        [sys.executable, str(RENDER_VERIFY), str(scene_file), scene_name],
-        capture_output=True, text=True,
-    )
-    if result.returncode == 0:
-        return True, ""
-    return False, (result.stdout + result.stderr).strip()
-
-
-def _strip_fences(text: str) -> str:
-    text = re.sub(r"^```(?:python)?\n?", "", text)
-    text = re.sub(r"\n?```$", "", text)
-    return text.strip()
+def _extract_scene_name(scene_file: Path) -> str:
+    m = re.search(r"class\s+(Scene\w*)\s*\(", scene_file.read_text(encoding="utf-8"))
+    return m.group(1) if m else "Scene"

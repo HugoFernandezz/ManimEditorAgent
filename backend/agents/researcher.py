@@ -1,34 +1,49 @@
-"""Researcher agent: searches plugins.manim.community and the web for useful Manim plugins."""
+"""Researcher agent — searches plugins.manim.community for the video idea.
+
+Refactored to use the harness layer:
+  - Versioned prompt (harness.prompts.RESEARCHER)
+  - call_agent with retry + backoff + validator (harness.runner)
+  - Structured guardrail on output (harness.guardrails.plugins_proposal_valid)
+  - All events persisted to the project event log (harness.store)
+
+The agent file itself stays tiny — that's the point.
+"""
 from __future__ import annotations
 import json
 from pathlib import Path
-from claude_runner import run_with_tools
 
-SYSTEM = """\
-You are a Manim research assistant. Search the Manim Community plugin registry
-(https://plugins.manim.community/) and the web for Manim Community Edition plugins
-relevant to the given video idea.
-
-For each plugin found, return a JSON array with objects containing:
-  name (pip package name), description (one sentence), repo (GitHub URL), relevance (why it helps).
-
-Return ONLY a valid JSON array. If nothing relevant, return [].
-Only include plugins you confirmed exist and are pip-installable.
-"""
+from harness.runner import call_agent, AgentCallFailed
+from harness.guardrails import extract_json_array, plugins_proposal_valid
+from harness.prompts import RESEARCHER
 
 
-def run(idea: str, project_path: Path) -> list[dict]:
-    response = run_with_tools(
-        prompt=f"Video idea: {idea}\n\nSearch for relevant Manim plugins and return a JSON array.",
-        system=SYSTEM,
-        model="sonnet",
-        tools="WebSearch,WebFetch",
-        timeout=120,
-    )
-    start = response.find("[")
-    end = response.rfind("]") + 1
-    plugins: list[dict] = json.loads(response[start:end]) if start != -1 else []
+def _validator(raw: str) -> tuple[bool, str]:
+    ok, parsed = extract_json_array(raw)
+    if not ok:
+        return False, str(parsed)
+    return plugins_proposal_valid(parsed)
+
+
+def run(project_id: str, idea: str, project_path: Path) -> list[dict]:
+    try:
+        raw = call_agent(
+            project_id=project_id,
+            agent="researcher",
+            prompt=RESEARCHER.render(idea=idea),
+            system=RESEARCHER.system,
+            model="sonnet",
+            tools="WebSearch,WebFetch",
+            timeout=120,
+            max_attempts=3,
+            validator=_validator,
+        )
+    except AgentCallFailed:
+        # Researcher is non-critical — degrade gracefully to empty plugin list
+        (project_path / "plugins_proposal.json").write_text("[]", encoding="utf-8")
+        return []
+
+    _, plugins = extract_json_array(raw)
     (project_path / "plugins_proposal.json").write_text(
-        json.dumps(plugins, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(plugins, ensure_ascii=False, indent=2), encoding="utf-8",
     )
     return plugins

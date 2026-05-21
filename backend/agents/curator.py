@@ -1,63 +1,49 @@
-"""Curator agent: extracts learnings from a completed video and proposes skill updates."""
+"""Curator — extracts learnings + proposes skill updates as reviewable diffs."""
 from __future__ import annotations
 import json
+import re
 from pathlib import Path
-from claude_runner import run_text
+from harness.runner import call_agent, AgentCallFailed
+from harness.prompts import CURATOR
 from tools.skill_diff import generate_diff
 
 SKILL_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills" / "manim"
 
-SYSTEM = """\
-You are a Manim knowledge curator. After a video is produced and approved, you extract
-the most valuable learnings to improve the skill documentation.
 
-You receive the outline, QA notes per scene, user feedback, and current skill files.
-
-Your task:
-1. Write a "learnings.md" summary under 300 words (what went well, errors found and fixed, patterns).
-2. Propose targeted updates to ONE or TWO skill files if genuinely warranted.
-   Prefer updating "references/troubleshooting.md" for new error→fix pairs.
-   Only update SKILL.md if a new anti-pattern is strongly justified.
-   Output the FULL updated content of each changed file.
-
-Format:
---- LEARNINGS ---
-<content>
-
---- FILE: references/troubleshooting.md ---
-<full updated content>
-
---- FILE: SKILL.md ---
-<full updated content if needed, else omit>
-"""
+def _validator(raw: str) -> tuple[bool, str]:
+    if "--- LEARNINGS ---" not in raw:
+        return False, "missing --- LEARNINGS --- section"
+    return True, "ok"
 
 
-def run(project_path: Path) -> dict:
+def run(project_id: str, project_path: Path) -> dict:
     outline = (project_path / "outline.md").read_text(encoding="utf-8") if (project_path / "outline.md").exists() else ""
     feedback_path = project_path / "feedback.json"
     feedback = json.loads(feedback_path.read_text(encoding="utf-8")) if feedback_path.exists() else {}
-
     qa_notes = []
     for qa_file in sorted((project_path / "renders").glob("*/qa_notes.md")):
         qa_notes.append(f"### {qa_file.parent.name}\n{qa_file.read_text(encoding='utf-8')}")
 
-    skill_md = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    skill_md     = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
     troubleshoot = (SKILL_ROOT / "references" / "troubleshooting.md").read_text(encoding="utf-8")
 
-    prompt = (
-        f"OUTLINE:\n{outline}\n\n"
-        f"QA NOTES:\n{chr(10).join(qa_notes) or 'No QA notes.'}\n\n"
-        f"USER FEEDBACK:\n{json.dumps(feedback, ensure_ascii=False, indent=2)}\n\n"
-        f"CURRENT SKILL.md:\n{skill_md}\n\n"
-        f"CURRENT troubleshooting.md:\n{troubleshoot}\n\n"
-        "Extract learnings and propose skill updates."
-    )
-    raw = run_text(prompt, system=SYSTEM, model="sonnet", timeout=180)
+    try:
+        raw = call_agent(
+            project_id=project_id, agent="curator",
+            prompt=CURATOR.render(
+                outline=outline, qa_notes="\n\n".join(qa_notes) or "No QA notes.",
+                feedback=json.dumps(feedback, ensure_ascii=False, indent=2),
+                skill_md=skill_md, troubleshoot=troubleshoot,
+            ),
+            system=CURATOR.system, model="sonnet",
+            timeout=180, max_attempts=2, validator=_validator,
+        )
+    except AgentCallFailed:
+        return {"learnings": "", "patches": {}}
 
     learnings_dir = project_path / "learnings"
     learnings_dir.mkdir(exist_ok=True)
 
-    import re
     sections = re.split(r"---\s*(LEARNINGS|FILE:\s*[\w/.]+)\s*---", raw)
     patches: dict[str, dict] = {}
     learnings_text = ""
@@ -78,7 +64,6 @@ def run(project_path: Path) -> dict:
 
     if learnings_text:
         (learnings_dir / "notes.md").write_text(learnings_text, encoding="utf-8")
-
     all_diffs = "\n\n".join(
         f"### {k}\n```diff\n{v['diff']}\n```" for k, v in patches.items() if v["diff"]
     )

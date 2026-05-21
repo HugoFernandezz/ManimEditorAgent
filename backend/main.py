@@ -212,6 +212,59 @@ async def get_frame_image(project_id: str, scene_num: int, filename: str):
     return FileResponse(str(img), media_type="image/png")
 
 
+# ── Harness telemetry endpoints ──────────────────────────────────────────────
+
+@app.get("/projects/{project_id}/trace")
+async def get_trace(project_id: str, limit: int = 500) -> list[dict]:
+    """Full event-sourced trace for debugging and grading."""
+    from harness.store import load_log
+    log = load_log(project_id)
+    return [e.model_dump() for e in log.events[-limit:]]
+
+
+@app.get("/projects/{project_id}/metrics")
+async def get_metrics(project_id: str) -> dict:
+    """Aggregated per-agent metrics: calls, retries, duration, est. cost."""
+    from harness.store import load_log
+    log = load_log(project_id)
+    agg: dict[str, dict] = {}
+    for e in log.events:
+        if e.kind != "metric.emitted" or not e.agent:
+            continue
+        a = agg.setdefault(e.agent, {
+            "calls": 0, "total_duration_ms": 0, "total_input_chars": 0,
+            "total_output_chars": 0, "errors": 0, "total_cost_usd": 0.0,
+        })
+        a["calls"] += 1
+        a["total_duration_ms"] += e.payload.get("duration_ms", 0)
+        a["total_input_chars"] += e.payload.get("input_chars", 0)
+        a["total_output_chars"] += e.payload.get("output_chars", 0)
+        a["total_cost_usd"] += e.payload.get("cost_usd_estimate", 0.0)
+        if e.payload.get("outcome") == "error":
+            a["errors"] += 1
+    # Add retries and guardrail violations
+    for e in log.events:
+        if e.kind == "agent.retry" and e.agent in agg:
+            agg[e.agent].setdefault("retries", 0)
+            agg[e.agent]["retries"] += 1
+        if e.kind == "guardrail.violated" and e.agent in agg:
+            agg[e.agent].setdefault("guardrail_violations", 0)
+            agg[e.agent]["guardrail_violations"] += 1
+    return {"agents": agg, "total_events": len(log.events)}
+
+
+@app.get("/projects/{project_id}/grades")
+async def get_grades(project_id: str) -> list[dict]:
+    """All grader results for the project (deterministic + LLM-as-judge)."""
+    from harness.store import load_log
+    log = load_log(project_id)
+    return [
+        {**e.payload, "kind": e.kind, "agent": e.agent, "scene": e.scene,
+         "timestamp": e.timestamp}
+        for e in log.events if e.kind in ("grader.passed", "grader.failed")
+    ]
+
+
 # ── Skill file editor ────────────────────────────────────────────────────────
 
 SKILL_ROOT = Path(__file__).parent.parent / ".agents" / "skills" / "manim"
