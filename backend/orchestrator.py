@@ -4,12 +4,11 @@ Each call to run_pipeline is isolated: fresh Anthropic client, no shared state.
 Events are emitted via an async queue consumed by the WebSocket endpoint.
 """
 from __future__ import annotations
-import asyncio
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import AsyncGenerator, Callable
+from typing import Callable
 
 import anthropic
 
@@ -25,8 +24,8 @@ MAX_QA_CYCLES = 3
 Emit = Callable[[PipelineEvent], None]
 
 
-async def run_pipeline(project_id: str, emit: Emit) -> None:
-    """Run the full pipeline for a project. Designed to run in a thread via asyncio.to_thread."""
+def run_pipeline(project_id: str, emit: Emit) -> None:
+    """Run env check + researcher, then pause awaiting plugin approval."""
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
     client = new_client()
@@ -52,14 +51,14 @@ async def run_pipeline(project_id: str, emit: Emit) -> None:
         plugins = researcher.run(client, manifest["idea"], proj)
         ev("plugins_proposed", plugins=plugins)
         update_manifest(project_id, {"status": "awaiting_plugins", "plugins_proposal": plugins})
-        # Pipeline pauses here — WebSocket client will call /projects/{id}/plugins/confirm
+        # Pipeline pauses — client calls POST /projects/{id}/plugins/confirm to resume
 
     except Exception as e:
         ev("error", message=str(e))
         update_manifest(project_id, {"status": "error", "error": str(e)})
 
 
-async def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emit: Emit) -> None:
+def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emit: Emit) -> None:
     """Continue pipeline after user approves plugins."""
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
@@ -171,7 +170,7 @@ async def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str
         update_manifest(project_id, {"status": "error", "error": str(e)})
 
 
-async def run_curator(project_id: str, emit: Emit) -> None:
+def run_curator(project_id: str, emit: Emit) -> None:
     proj = project_path(project_id)
     client = new_client()
 

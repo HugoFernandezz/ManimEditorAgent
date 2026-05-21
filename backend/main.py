@@ -8,7 +8,6 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from events import PipelineEvent
@@ -22,8 +21,6 @@ from project_store import (
 from orchestrator import run_pipeline, run_pipeline_after_plugins, run_curator
 from tools.skill_diff import apply_hunk
 
-PROJECTS_ROOT = Path(__file__).parent.parent / "projects"
-
 app = FastAPI(title="ManimEditorAgent", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -35,8 +32,14 @@ app.add_middleware(
 
 # Active WebSocket connections keyed by project_id
 _ws_clients: dict[str, list[WebSocket]] = {}
-# Active background tasks
-_pipeline_tasks: dict[str, asyncio.Task] = {}
+# The main event loop — captured at startup so threads can safely schedule sends
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+@app.on_event("startup")
+async def _capture_loop() -> None:
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
 
 
 # ── Models ──────────────────────────────────────────────────────────────────
@@ -52,7 +55,7 @@ class CreateProjectRequest(BaseModel):
 
 
 class PluginsConfirmRequest(BaseModel):
-    approved: list[str]  # list of package names user approved
+    approved: list[str]
 
 
 class ReviewRequest(BaseModel):
@@ -63,20 +66,20 @@ class ReviewRequest(BaseModel):
 
 
 class PatchHunkRequest(BaseModel):
-    file_rel: str   # e.g. "references/troubleshooting.md"
-    hunk: str       # unified diff hunk to apply
+    file_rel: str
+    hunk: str
 
 
 # ── WebSocket broadcasting ───────────────────────────────────────────────────
 
 def _emit(event: PipelineEvent) -> None:
-    """Synchronous emit called from background thread via asyncio."""
+    """Called from a worker thread — schedules sends on the main event loop."""
+    if _main_loop is None:
+        return
     pid = event.project_id
-    loop = asyncio.get_event_loop()
-    if pid in _ws_clients:
-        msg = event.to_json()
-        for ws in list(_ws_clients[pid]):
-            asyncio.run_coroutine_threadsafe(_safe_send(ws, msg), loop)
+    msg = event.to_json()
+    for ws in list(_ws_clients.get(pid, [])):
+        asyncio.run_coroutine_threadsafe(_safe_send(ws, msg), _main_loop)
 
 
 async def _safe_send(ws: WebSocket, msg: str) -> None:
@@ -207,41 +210,16 @@ async def ws_endpoint(websocket: WebSocket, project_id: str):
 
 
 # ── Background task wrappers ─────────────────────────────────────────────────
+# Pipeline functions are synchronous (blocking). asyncio.to_thread runs them
+# in a worker thread while the event loop stays unblocked for WebSocket sends.
 
 async def _run_pipeline_bg(project_id: str) -> None:
-    await asyncio.to_thread(
-        lambda: asyncio.run(_async_emit_wrapper(run_pipeline, project_id))
-    )
+    await asyncio.to_thread(run_pipeline, project_id, _emit)
 
 
 async def _run_after_plugins_bg(project_id: str, approved: list[str]) -> None:
-    await asyncio.to_thread(
-        lambda: asyncio.run(_async_emit_wrapper(run_pipeline_after_plugins, project_id, approved))
-    )
+    await asyncio.to_thread(run_pipeline_after_plugins, project_id, approved, _emit)
 
 
 async def _run_curator_bg(project_id: str) -> None:
-    await asyncio.to_thread(
-        lambda: asyncio.run(_async_emit_wrapper(run_curator, project_id))
-    )
-
-
-async def _async_emit_wrapper(coro_fn, project_id: str, *args) -> None:
-    queue: asyncio.Queue[PipelineEvent | None] = asyncio.Queue()
-
-    def emit_sync(event: PipelineEvent) -> None:
-        queue.put_nowait(event)
-
-    async def drain():
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            _emit(event)
-
-    drain_task = asyncio.create_task(drain())
-    try:
-        await coro_fn(project_id, *args, emit_sync)
-    finally:
-        await queue.put(None)
-        await drain_task
+    await asyncio.to_thread(run_curator, project_id, _emit)
