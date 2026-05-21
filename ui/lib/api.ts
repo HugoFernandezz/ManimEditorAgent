@@ -2,15 +2,18 @@ const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export interface Project {
   id: string;
-  idea: string;
+  name: string;
+  description: string;
+  status: string;
+  created_at: string;
+  // Video fields (null until video is started)
+  idea?: string | null;
   lang: string;
   audience: string;
   target_length: string;
-  voice_profile?: string;
+  voice_profile?: string | null;
   export_langs: string[];
   tts_backend: string;
-  status: string;
-  created_at: string;
   plugins?: Record<string, { status: string }>;
   plugins_proposal?: Plugin[];
   final_video?: string;
@@ -35,15 +38,7 @@ export async function fetchProjects(): Promise<Project[]> {
   return res.json();
 }
 
-export async function createProject(data: {
-  idea: string;
-  lang: string;
-  audience: string;
-  target_length: string;
-  voice_profile?: string;
-  export_langs?: string[];
-  tts_backend?: string;
-}): Promise<Project> {
+export async function createProject(data: { name: string; description?: string }): Promise<Project> {
   const res = await fetch(`${BASE}/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -51,6 +46,25 @@ export async function createProject(data: {
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function startVideo(
+  projectId: string,
+  data: {
+    idea: string;
+    lang: string;
+    audience: string;
+    target_length: string;
+    voice_profile?: string;
+    export_langs?: string[];
+  }
+): Promise<void> {
+  const res = await fetch(`${BASE}/projects/${projectId}/start-video`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 export async function fetchProject(id: string): Promise<Project> {

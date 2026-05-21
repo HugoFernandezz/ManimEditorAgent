@@ -134,15 +134,19 @@ export function FlowDiagram({ project }: Props) {
   return (
     <div className="max-w-2xl mx-auto space-y-0">
       {/* Context banner */}
-      <div className="mb-6 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 text-sm text-zinc-400">
-        <span className="text-zinc-200 font-medium">Idea: </span>
-        {project.idea}
-        <span className="mx-2 text-zinc-600">·</span>
-        <span className="text-zinc-500">{project.lang.toUpperCase()}</span>
-        <span className="mx-2 text-zinc-600">·</span>
-        <span className="text-zinc-500">{project.audience}</span>
-        <span className="mx-2 text-zinc-600">·</span>
-        <span className="text-zinc-500">{project.target_length}</span>
+      <div className="mb-6 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 text-sm text-zinc-400 space-y-1">
+        <div>
+          <span className="text-zinc-200 font-medium">Proyecto: </span>
+          {project.name}
+        </div>
+        {project.idea && (
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+            <span><span className="text-zinc-600">idea:</span> {project.idea}</span>
+            <span><span className="text-zinc-600">lang:</span> {project.lang.toUpperCase()}</span>
+            <span><span className="text-zinc-600">audiencia:</span> {project.audience}</span>
+            <span><span className="text-zinc-600">duración:</span> {project.target_length}</span>
+          </div>
+        )}
       </div>
 
       {STEPS.map((step, idx) => {

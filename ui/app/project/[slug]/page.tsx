@@ -10,6 +10,7 @@ import {
   PipelineView, INITIAL_PIPELINE, type PipelineState, type AgentStatus,
 } from "@/components/pipeline-view";
 import { FlowDiagram } from "@/components/flow-diagram";
+import { StartVideoForm } from "@/components/start-video-form";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, ChevronRight, Play, Workflow, Rocket } from "lucide-react";
 
@@ -134,11 +135,20 @@ export default function ProjectPage() {
       </div>
 
       {/* ── Tab: Flow preview ── */}
-      {tab === "flow" && project && (
-        <FlowDiagram project={project} />
-      )}
       {tab === "flow" && !project && (
         <div className="text-sm text-zinc-500 py-8 text-center">Cargando...</div>
+      )}
+      {tab === "flow" && project && project.status === "draft" && (
+        <StartVideoForm
+          projectId={slug}
+          onStarted={() => {
+            setTab("execution");
+            fetchProject(slug).then(setProject);
+          }}
+        />
+      )}
+      {tab === "flow" && project && project.status !== "draft" && (
+        <FlowDiagram project={project} />
       )}
 
       {/* ── Tab: Execution ── */}

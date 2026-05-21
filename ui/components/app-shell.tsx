@@ -88,7 +88,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <button
                 key={p.id}
                 onClick={() => router.push(`/project/${p.id}`)}
-                title={p.idea}
+                title={p.idea ?? p.name}
                 className={`flex items-center gap-2.5 w-full rounded-lg px-2 py-2 text-left transition-colors ${
                   isActive
                     ? "bg-zinc-800 text-zinc-100"
@@ -101,7 +101,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   }`}
                 />
                 {!collapsed && (
-                  <span className="text-xs truncate flex-1">{p.idea}</span>
+                  <span className="text-xs truncate flex-1">{p.name || (p.idea ?? p.id)}</span>
                 )}
               </button>
             );
@@ -115,7 +115,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Video className="w-5 h-5 text-zinc-500" />
           <span className="text-sm font-semibold text-zinc-300">
             {activeSlug
-              ? projects.find((p) => p.id === activeSlug)?.idea ?? activeSlug
+              ? (() => { const p = projects.find(x => x.id === activeSlug); return p?.name || p?.idea || activeSlug; })()
               : "Selecciona un proyecto"}
           </span>
         </header>

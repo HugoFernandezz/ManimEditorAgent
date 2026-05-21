@@ -45,6 +45,11 @@ async def _capture_loop() -> None:
 # ── Models ──────────────────────────────────────────────────────────────────
 
 class CreateProjectRequest(BaseModel):
+    name: str
+    description: str = ""
+
+
+class StartVideoRequest(BaseModel):
     idea: str
     lang: str = "es"
     audience: str = "general"
@@ -98,13 +103,24 @@ async def get_projects() -> list[dict]:
 
 @app.post("/projects", status_code=201)
 async def create_new_project(req: CreateProjectRequest) -> dict:
-    manifest = create_project(req.model_dump())
-    pid = manifest["id"]
-    _ws_clients[pid] = []
-    # Start pipeline in background
-    task = asyncio.create_task(_run_pipeline_bg(pid))
-    _pipeline_tasks[pid] = task
+    manifest = create_project(req.name, req.description)
+    _ws_clients[manifest["id"]] = []
     return manifest
+
+
+@app.post("/projects/{project_id}/start-video", status_code=202)
+async def start_video(project_id: str, req: StartVideoRequest) -> dict:
+    try:
+        manifest = load_manifest(project_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    if manifest.get("status") not in ("draft", "error", "env_failed"):
+        raise HTTPException(400, f"Cannot start video from status '{manifest['status']}'")
+    update_manifest(project_id, {**req.model_dump(), "status": "running"})
+    _ws_clients.setdefault(project_id, [])
+    task = asyncio.create_task(_run_pipeline_bg(project_id))
+    _pipeline_tasks[project_id] = task
+    return {"ok": True}
 
 
 @app.get("/projects/{project_id}")

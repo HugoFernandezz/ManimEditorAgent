@@ -17,23 +17,32 @@ def _slug(text: str) -> str:
     return text[:60] or "video"
 
 
-def create_project(manifest: dict[str, Any]) -> dict[str, Any]:
-    slug = _slug(manifest.get("idea", "video"))
+def create_project(name: str, description: str = "") -> dict[str, Any]:
+    """Create an empty project (no video configured yet)."""
+    slug = _slug(name)
     base = PROJECTS_ROOT / slug
     suffix = 0
     while base.exists():
         suffix += 1
         base = PROJECTS_ROOT / f"{slug}-{suffix}"
-    base.mkdir(parents=True, exist_ok=True)
-    (base / "scenes").mkdir()
-    (base / "renders").mkdir()
-    (base / "audio").mkdir()
-    (base / "final").mkdir()
-    (base / "learnings").mkdir()
-    manifest["id"] = base.name
-    manifest["status"] = "created"
-    manifest["created_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["plugins"] = []
+    for sub in ("scenes", "renders", "audio", "final", "learnings"):
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "id": base.name,
+        "name": name,
+        "description": description,
+        "status": "draft",          # no video configured yet
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        # Video fields — populated when the user starts a video
+        "idea": None,
+        "lang": "es",
+        "audience": "general",
+        "target_length": "60s",
+        "voice_profile": None,
+        "export_langs": [],
+        "tts_backend": "stub",
+        "plugins": [],
+    }
     _write_json(base / "manifest.json", manifest)
     return manifest
 

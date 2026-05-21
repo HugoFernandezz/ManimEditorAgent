@@ -1,12 +1,8 @@
 "use client";
 import { useState } from "react";
 import { createProject } from "@/lib/api";
-import { X, Loader2 } from "lucide-react";
+import { X, Loader2, FolderPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const AUDIENCES = ["general", "high school", "undergrad", "advanced"];
-const LENGTHS   = ["30s", "60s", "2min", "5min+"];
-const LANGS     = [{ code: "es", label: "Español" }, { code: "en", label: "English" }];
 
 interface Props {
   onClose: () => void;
@@ -14,20 +10,18 @@ interface Props {
 }
 
 export function NewProjectModal({ onClose, onCreate }: Props) {
-  const [idea, setIdea]               = useState("");
-  const [lang, setLang]               = useState("es");
-  const [audience, setAudience]       = useState("general");
-  const [targetLength, setTargetLength] = useState("60s");
+  const [name, setName]               = useState("");
+  const [description, setDescription] = useState("");
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!idea.trim()) return;
+    if (!name.trim()) return;
     setLoading(true);
     setError("");
     try {
-      const proj = await createProject({ idea: idea.trim(), lang, audience, target_length: targetLength });
+      const proj = await createProject({ name: name.trim(), description: description.trim() });
       onCreate(proj.id);
     } catch (err) {
       setError(String(err));
@@ -37,79 +31,44 @@ export function NewProjectModal({ onClose, onCreate }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Scrim */}
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      {/* Panel */}
-      <div className="relative z-10 bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-lg mx-4 shadow-2xl animate-fade-in-up">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-md mx-4 shadow-2xl animate-fade-in-up">
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
-          <h2 className="text-base font-semibold">Nuevo video</h2>
+          <div className="flex items-center gap-2">
+            <FolderPlus className="w-4 h-4 text-zinc-400" />
+            <h2 className="text-base font-semibold">Nuevo proyecto</h2>
+          </div>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-100 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          {/* Idea */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">
-              Idea del video *
+              Nombre del proyecto *
             </label>
-            <textarea
-              value={idea}
-              onChange={(e) => setIdea(e.target.value)}
-              placeholder="Ej: Explica intuitivamente qué es la derivada en un punto, para bachillerato"
-              rows={3}
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Ej: Derivadas para bachillerato"
               required
               autoFocus
-              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none transition-colors"
+              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            {/* Idioma */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">Idioma</label>
-              <select
-                value={lang}
-                onChange={(e) => setLang(e.target.value)}
-                className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {LANGS.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-              </select>
-            </div>
-            {/* Duración */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">Duración</label>
-              <select
-                value={targetLength}
-                onChange={(e) => setTargetLength(e.target.value)}
-                className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {LENGTHS.map((l) => <option key={l} value={l}>{l}</option>)}
-              </select>
-            </div>
-          </div>
-
-          {/* Audiencia */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">Audiencia</label>
-            <div className="flex flex-wrap gap-2">
-              {AUDIENCES.map((a) => (
-                <button
-                  key={a} type="button" onClick={() => setAudience(a)}
-                  className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
-                    audience === a
-                      ? "bg-blue-600 border-blue-600 text-white"
-                      : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
-                  }`}
-                >
-                  {a}
-                </button>
-              ))}
-            </div>
+            <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">
+              Descripción <span className="text-zinc-600">(opcional)</span>
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Para qué es este proyecto, notas iniciales..."
+              rows={3}
+              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none transition-colors"
+            />
           </div>
 
           {error && (
@@ -118,8 +77,14 @@ export function NewProjectModal({ onClose, onCreate }: Props) {
             </div>
           )}
 
-          <Button type="submit" disabled={loading || !idea.trim()} className="w-full gap-2">
-            {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Creando...</> : "Lanzar pipeline →"}
+          <p className="text-xs text-zinc-600">
+            Podrás configurar y lanzar el video desde dentro del proyecto.
+          </p>
+
+          <Button type="submit" disabled={loading || !name.trim()} className="w-full gap-2">
+            {loading
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Creando...</>
+              : "Crear proyecto →"}
           </Button>
         </form>
       </div>
