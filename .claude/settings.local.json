@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Recurse .agents -Force | ForEach-Object { $_.FullName })",
+      "PowerShell(Get-ChildItem .agents -Recurse -Depth 2 -Force | ForEach-Object { $_.FullName })",
+      "PowerShell(npm *)"
+    ]
+  }
+}
