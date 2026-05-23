@@ -9,6 +9,7 @@ import { StartVideoForm } from "@/components/start-video-form";
 import { Button } from "@/components/ui/button";
 import { usePipeline } from "@/lib/use-pipeline";
 import { AgentLogPanel } from "@/components/agent-log-panel";
+import { ExportToDriveButton } from "@/components/export-to-drive-button";
 import type { PipelineState } from "@/components/pipeline-view";
 
 const AGENT_LABELS: Partial<Record<keyof PipelineState, string>> = {
@@ -285,6 +286,13 @@ export default function ProjectPage() {
             {project?.final_video && (
               <div className="rounded-xl overflow-hidden border border-zinc-800 bg-black">
                 <video controls className="w-full" src={videoUrl(slug)} />
+                <div className="px-3 py-2.5 border-t border-zinc-800 flex items-center justify-between">
+                  <span className="text-xs text-zinc-500">Video final · {project.lang?.toUpperCase()}</span>
+                  <ExportToDriveButton
+                    videoSrc={videoUrl(slug)}
+                    filename={`${project.name ?? slug}_video_${project.lang ?? "es"}.mp4`}
+                  />
+                </div>
               </div>
             )}
           </div>
