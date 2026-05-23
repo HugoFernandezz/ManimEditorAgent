@@ -1,8 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
 import { fetchSkillFile, saveSkillFile, fetchSkillFiles } from "@/lib/api";
-import { X, Save, Loader2, FileText, ChevronDown } from "lucide-react";
+import { X, Save, Loader2, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
+
+type LoadedFile =
+  | { file: string; state: "ready"; content: string }
+  | { file: string; state: "error"; message: string };
 
 interface Props {
   agentName: string;
@@ -13,36 +17,48 @@ interface Props {
 export function SkillEditor({ agentName, defaultFiles, onClose }: Props) {
   const [allFiles, setAllFiles]     = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState(defaultFiles[0] ?? "SKILL.md");
+  const [loaded, setLoaded]         = useState<LoadedFile | null>(null);
   const [content, setContent]       = useState("");
-  const [loading, setLoading]       = useState(true);
   const [saving, setSaving]         = useState(false);
   const [saved, setSaved]           = useState(false);
-  const [error, setError]           = useState("");
+  const [saveError, setSaveError]   = useState("");
 
   useEffect(() => {
     fetchSkillFiles().then(setAllFiles);
   }, []);
 
   useEffect(() => {
-    setLoading(true);
-    setError("");
+    let cancelled = false;
     fetchSkillFile(activeFile)
-      .then((d) => { setContent(d.content); setLoading(false); })
-      .catch(() => { setError("No se pudo cargar el archivo."); setLoading(false); });
+      .then((d) => {
+        if (cancelled) return;
+        setContent(d.content);
+        setLoaded({ file: activeFile, state: "ready", content: d.content });
+      })
+      .catch(() => {
+        if (!cancelled) setLoaded({ file: activeFile, state: "error", message: "No se pudo cargar el archivo." });
+      });
+    return () => { cancelled = true; };
   }, [activeFile]);
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveError("");
     try {
       await saveSkillFile(activeFile, content);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
-      setError("Error al guardar.");
+      setSaveError("Error al guardar.");
     } finally {
       setSaving(false);
     }
   };
+
+  // Derive UI state from the request key — no setState-in-effect needed.
+  const stale = loaded?.file !== activeFile;
+  const loading = stale;
+  const loadError = !stale && loaded?.state === "error" ? loaded.message : (stale ? "" : saveError);
 
   const relevantFiles = allFiles.filter((f) => defaultFiles.includes(f));
   const otherFiles    = allFiles.filter((f) => !defaultFiles.includes(f));
@@ -134,9 +150,9 @@ export function SkillEditor({ agentName, defaultFiles, onClose }: Props) {
               <div className="flex-1 flex items-center justify-center">
                 <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
               </div>
-            ) : error ? (
+            ) : loadError ? (
               <div className="flex-1 flex items-center justify-center">
-                <p className="text-sm text-red-400">{error}</p>
+                <p className="text-sm text-red-400">{loadError}</p>
               </div>
             ) : (
               <textarea

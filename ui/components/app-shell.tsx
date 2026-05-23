@@ -1,15 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { fetchProjects, type Project } from "@/lib/api";
 import { NewProjectModal } from "@/components/new-project-modal";
-import {
-  Plus, ChevronLeft, ChevronRight, Video,
-  Clock, CheckCircle, AlertCircle, Loader2, XCircle,
-} from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Video } from "lucide-react";
 
 const STATUS_DOT: Record<string, string> = {
-  created:          "bg-zinc-500",
+  draft:            "bg-zinc-500",
   running:          "bg-blue-500 animate-pulse",
   awaiting_plugins: "bg-yellow-500",
   planning_done:    "bg-blue-400",
@@ -27,17 +24,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [showNew, setShowNew] = useState(false);
 
-  const loadProjects = () => fetchProjects().then(setProjects);
+  const loadProjects = useCallback(() => fetchProjects().then(setProjects), []);
 
   useEffect(() => {
     loadProjects();
     const interval = setInterval(loadProjects, 8000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadProjects]);
 
-  const activeSlug = pathname.startsWith("/project/")
-    ? pathname.split("/")[2]
-    : null;
+  const activeSlug = pathname.startsWith("/project/") ? pathname.split("/")[2] : null;
+  const activeProject = useMemo(
+    () => (activeSlug ? projects.find((p) => p.id === activeSlug) ?? null : null),
+    [activeSlug, projects],
+  );
+  const headerLabel = activeSlug
+    ? (activeProject?.name || activeProject?.idea || activeSlug)
+    : "Selecciona un proyecto";
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
@@ -113,11 +115,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <header className="flex items-center gap-3 px-6 py-4 border-b border-zinc-800 flex-shrink-0">
           <Video className="w-5 h-5 text-zinc-500" />
-          <span className="text-sm font-semibold text-zinc-300">
-            {activeSlug
-              ? (() => { const p = projects.find(x => x.id === activeSlug); return p?.name || p?.idea || activeSlug; })()
-              : "Selecciona un proyecto"}
-          </span>
+          <span className="text-sm font-semibold text-zinc-300">{headerLabel}</span>
         </header>
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
       </div>

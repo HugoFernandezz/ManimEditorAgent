@@ -3,7 +3,18 @@
     "allow": [
       "PowerShell(Get-ChildItem -Recurse .agents -Force | ForEach-Object { $_.FullName })",
       "PowerShell(Get-ChildItem .agents -Recurse -Depth 2 -Force | ForEach-Object { $_.FullName })",
-      "PowerShell(npm *)"
+      "PowerShell(npm *)",
+      "PowerShell(Get-Command *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:humanlayer.dev)",
+      "PowerShell(cd C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\ui; npx tsc --noEmit; \"tsc=$LASTEXITCODE\"; npx eslint . --ext .ts,.tsx 2>&1 | Select-Object -Last 15; \"eslint=$LASTEXITCODE\")",
+      "PowerShell(python -c \"import py_compile; py_compile.compile\\('backend/claude_runner.py', doraise=True\\); print\\('OK'\\)\")",
+      "PowerShell(\\(Get-Content CLAUDE.md | Measure-Object -Line\\).Lines)"
     ]
+  },
+  "enabledPlugins": {
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true,
+    "superpowers@claude-plugins-official": true
   }
 }

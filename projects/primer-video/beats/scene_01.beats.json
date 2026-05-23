@@ -1,0 +1,14 @@
+[
+  {
+    "id": "1.1",
+    "text": "El determinante: una fórmula que todos memorizan.",
+    "anim_hint": "Write the Text 'El Determinante' with font_size=60, centered on screen",
+    "duration_s_est": 2.8
+  },
+  {
+    "id": "1.2",
+    "text": "¿Pero qué significa realmente?",
+    "anim_hint": "FadeIn the MathTex det([[a,b],[c,d]]) = ad - bc positioned below the title using .next_to(title, DOWN, buff=0.5)",
+    "duration_s_est": 1.6
+  }
+]

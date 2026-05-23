@@ -15,6 +15,11 @@ venv/
 projects/*/renders/
 projects/*/final/
 projects/*/audio/*.wav
+projects/*/scenes/media/
+projects/*/events.jsonl
+
+# Manim generated media (runtime artifacts)
+backend/media/
 
 # Node
 ui/node_modules/

@@ -18,6 +18,7 @@ export interface Project {
   plugins_proposal?: Plugin[];
   final_video?: string;
   error?: string;
+  scenes?: Record<string, { status: SceneStatus; error?: string }>;
 }
 
 export interface Plugin {
@@ -57,6 +58,7 @@ export async function startVideo(
     target_length: string;
     voice_profile?: string;
     export_langs?: string[];
+    skip_research?: boolean;
   }
 ): Promise<void> {
   const res = await fetch(`${BASE}/projects/${projectId}/start-video`, {
@@ -74,11 +76,12 @@ export async function fetchProject(id: string): Promise<Project> {
 }
 
 export async function confirmPlugins(id: string, approved: string[]): Promise<void> {
-  await fetch(`${BASE}/projects/${id}/plugins/confirm`, {
+  const res = await fetch(`${BASE}/projects/${id}/plugins/confirm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approved }),
   });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 export async function submitReview(
@@ -130,6 +133,106 @@ export async function saveSkillFile(path: string, content: string): Promise<void
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
   });
+}
+
+// ── Scene types ──────────────────────────────────────────────────────────────
+
+export type SceneStatus =
+  | "pending"
+  | "rendering"
+  | "awaiting_review"
+  | "revising"
+  | "approved"
+  | "failed";
+
+export interface SceneFeedback {
+  ts: string;
+  text: string;
+}
+
+export interface Scene {
+  scene: number;
+  status: SceneStatus;
+  preview_url: string | null;
+  feedback_history: SceneFeedback[];
+  beats: unknown[];
+  scene_desc?: string;
+}
+
+export async function fetchScenes(id: string): Promise<Scene[]> {
+  const res = await fetch(`${BASE}/projects/${id}/scenes`);
+  if (!res.ok) throw new Error("Failed to fetch scenes");
+  return res.json();
+}
+
+export async function approveScene(id: string, sceneNum: number): Promise<void> {
+  const res = await fetch(`${BASE}/projects/${id}/scenes/${sceneNum}/approve`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function reviseScene(id: string, sceneNum: number, feedback: string): Promise<void> {
+  const res = await fetch(`${BASE}/projects/${id}/scenes/${sceneNum}/revise`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feedback }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function finalizeProject(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/projects/${id}/finalize`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+// ── Stop & resume ──────────────────────────────────────────────────────────
+
+export type ResumeStep = "planner" | "beats" | "scenes";
+
+export interface ResumeStepInfo {
+  available: boolean;
+  label: string;
+  detail: string;
+  skips: string[];
+}
+
+export interface ResumeOptions {
+  planner: ResumeStepInfo;
+  beats: ResumeStepInfo;
+  scenes: ResumeStepInfo;
+  artifacts: {
+    outline: boolean;
+    beats_count: number;
+    scenes_count: number;
+  };
+}
+
+export async function stopPipeline(id: string): Promise<{ ok: boolean; killed_subprocesses: number }> {
+  const res = await fetch(`${BASE}/projects/${id}/stop`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchResumeOptions(id: string): Promise<ResumeOptions> {
+  const res = await fetch(`${BASE}/projects/${id}/resume-options`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function resumePipeline(id: string, fromStep: ResumeStep): Promise<void> {
+  const res = await fetch(`${BASE}/projects/${id}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_step: fromStep }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export function scenePreviewUrl(id: string, sceneNum: number): string {
+  return `${BASE}/projects/${id}/scenes/${sceneNum}/preview`;
 }
 
 export function createWebSocket(projectId: string, onEvent: (e: PipelineEvent) => void): WebSocket {

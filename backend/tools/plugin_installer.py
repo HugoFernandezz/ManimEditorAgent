@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import importlib
 import sys
+from importlib import metadata
 
 
 def install_plugin(package_name: str) -> dict[str, str]:
@@ -21,5 +22,21 @@ def install_plugin(package_name: str) -> dict[str, str]:
         importlib.import_module(import_name)
         return {"status": "installed"}
     except ImportError:
-        # Package installed but import name differs — still treat as OK
-        return {"status": "installed", "note": f"installed but import as '{import_name}' failed — may need different import name"}
+        return {"status": "installed",
+                "note": f"installed but import as '{import_name}' failed"}
+
+
+def ensure_installed(package_name: str, extras: str | None = None) -> dict[str, str]:
+    """Idempotent install — no-op if `package_name` is already importable.
+
+    Used for system-critical plugins the pipeline pulls in by itself
+    (e.g. manim-voiceover). Returns a status dict in the same shape as
+    install_plugin: {"status": "installed" | "already" | "failed", ...}.
+    """
+    try:
+        version = metadata.version(package_name)
+        return {"status": "already", "version": version}
+    except metadata.PackageNotFoundError:
+        pass
+    spec = f"{package_name}[{extras}]" if extras else package_name
+    return install_plugin(spec)

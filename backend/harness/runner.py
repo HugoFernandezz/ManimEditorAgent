@@ -7,21 +7,41 @@ Wraps claude_runner.run_text / run_with_tools so every agent call gets:
   - structured events appended to the log
 """
 from __future__ import annotations
+import threading
 import time
 from pathlib import Path
 from typing import Callable
 
-from claude_runner import run_text, run_with_tools
+from claude_runner import run_text, run_with_tools, parse_stream_event
 from harness.events import AgentEvent
 from harness.store import append_event
 from harness.telemetry import measure, metric_event
 
 
 Validator = Callable[[str], tuple[bool, str]]  # (raw_output) -> (ok, message_or_repair)
+StreamEmit = Callable[[str, int | None, dict], None]  # (agent, scene, entry) -> None
 
 
 class AgentCallFailed(Exception):
     """All retries exhausted or validator rejected output beyond repair."""
+
+
+# Per-thread stream emit — set by orchestrator at the start of each pipeline thread
+_thread_stream = threading.local()
+
+
+def set_stream_emit(fn: StreamEmit) -> None:
+    """Register a stream-line callback for the current thread."""
+    _thread_stream.emit = fn
+
+
+def clear_stream_emit() -> None:
+    if hasattr(_thread_stream, "emit"):
+        del _thread_stream.emit
+
+
+def _get_stream_emit() -> StreamEmit | None:
+    return getattr(_thread_stream, "emit", None)
 
 
 def call_agent(
@@ -33,7 +53,7 @@ def call_agent(
     model: str = "sonnet",
     tools: str | None = None,
     add_dirs: list[Path] | None = None,
-    timeout: int = 180,
+    timeout: int = 300,
     max_attempts: int = 3,
     validator: Validator | None = None,
     scene: int | None = None,
@@ -58,12 +78,38 @@ def call_agent(
         try:
             with measure(agent, model, scene) as m:
                 m["input_chars"] = len(prompt) + len(system)
+                stream_emit = _get_stream_emit()
                 if tools is None:
-                    output = run_text(prompt=prompt, system=system, model=model, timeout=timeout)
+                    # No tool loop → no native stream events. Emit one synthetic
+                    # "thinking" line so the UI's per-agent panel shows progress
+                    # while the subprocess runs.
+                    if stream_emit is not None:
+                        stream_emit(agent, scene, {
+                            "line_type": "text",
+                            "summary": f"Generando con {model} (sin tools, {len(prompt) + len(system)} chars in)",
+                        })
+                    output = run_text(prompt=prompt, system=system, model=model,
+                                      timeout=timeout, project_id=project_id)
+                    if stream_emit is not None:
+                        stream_emit(agent, scene, {
+                            "line_type": "result",
+                            "summary": f"Output recibido · {len(output)} chars",
+                        })
+                elif stream_emit is not None:
+                    def _on_event(ev: dict, _a=agent, _s=scene, _se=stream_emit) -> None:
+                        entry = parse_stream_event(ev)
+                        if entry:
+                            _se(_a, _s, entry)
+                    output = run_with_tools(
+                        prompt=prompt, system=system, model=model,
+                        tools=tools, add_dirs=add_dirs or [], timeout=timeout,
+                        on_event=_on_event, project_id=project_id,
+                    )
                 else:
                     output = run_with_tools(
                         prompt=prompt, system=system, model=model,
                         tools=tools, add_dirs=add_dirs or [], timeout=timeout,
+                        project_id=project_id,
                     )
                 m["output_chars"] = len(output)
         except Exception as e:

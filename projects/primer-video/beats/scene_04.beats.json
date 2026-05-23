@@ -1,0 +1,14 @@
+[
+  {
+    "id": "4.1",
+    "text": "¿Y si el determinante es cero?",
+    "anim_hint": "Show a fresh unit Square in a new LinearTransformationScene, then call self.apply_matrix(np.array([[1,2],[0.5,1]])) with run_time=tracker.duration to flatten the square onto the line y=0.5x",
+    "duration_s_est": 2.4
+  },
+  {
+    "id": "4.2",
+    "text": "El espacio se aplana a una sola línea.",
+    "anim_hint": "FadeIn MathTex showing det([[1,2],[0.5,1]]) = 1*1 - 2*0.5 = 0 centered on screen, then Write Text 'det = 0 -> el espacio colapsa a una linea' in RED below it; split both across tracker.duration",
+    "duration_s_est": 3.2
+  }
+]

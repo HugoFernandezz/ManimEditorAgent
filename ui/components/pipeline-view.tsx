@@ -2,8 +2,9 @@
 import { useState } from "react";
 import { SkillEditor } from "@/components/skill-editor";
 import {
-  Search, BookOpen, Code2, Eye, Mic, Film, Brain,
-  Puzzle, CheckCircle, XCircle, AlertTriangle, Loader2, Circle,
+  Search, BookOpen, ListOrdered, Code2, Eye, Film, Brain,
+  Puzzle, CheckCircle, XCircle, AlertTriangle, Loader2, Circle, LayoutGrid,
+  Square,
 } from "lucide-react";
 
 export type AgentStatus = "pending" | "running" | "ok" | "error" | "degraded" | "waiting";
@@ -14,27 +15,29 @@ export interface AgentState {
 }
 
 export interface PipelineState {
-  env:        AgentState;
-  researcher: AgentState;
-  plugins:    AgentState;
-  planner:    AgentState;
-  coder:      AgentState;
-  visual_qa:  AgentState;
-  narrator:   AgentState;
-  editor:     AgentState;
-  curator:    AgentState;
+  env:          AgentState;
+  researcher:   AgentState;
+  plugins:      AgentState;
+  planner:      AgentState;
+  beat_writer:  AgentState;
+  coder:        AgentState;
+  visual_qa:    AgentState;
+  scene_review: AgentState;
+  editor:       AgentState;
+  curator:      AgentState;
 }
 
 export const INITIAL_PIPELINE: PipelineState = {
-  env:        { status: "pending" },
-  researcher: { status: "pending" },
-  plugins:    { status: "pending" },
-  planner:    { status: "pending" },
-  coder:      { status: "pending" },
-  visual_qa:  { status: "pending" },
-  narrator:   { status: "pending" },
-  editor:     { status: "pending" },
-  curator:    { status: "pending" },
+  env:          { status: "pending" },
+  researcher:   { status: "pending" },
+  plugins:      { status: "pending" },
+  planner:      { status: "pending" },
+  beat_writer:  { status: "pending" },
+  coder:        { status: "pending" },
+  visual_qa:    { status: "pending" },
+  scene_review: { status: "pending" },
+  editor:       { status: "pending" },
+  curator:      { status: "pending" },
 };
 
 interface AgentDef {
@@ -70,11 +73,18 @@ const AGENTS: AgentDef[] = [
     skillFiles: ["SKILL.md"],
   },
   {
+    id: "beat_writer",
+    label: "Beat Writer",
+    description: "Divide cada escena en beats voz↔animación",
+    icon: ListOrdered,
+    skillFiles: ["references/narration.md", "templates/voiceover.py"],
+  },
+  {
     id: "coder",
     label: "Coder",
-    description: "Escribe el código ManimCE",
+    description: "Escribe VoiceoverScene con un with self.voiceover por beat",
     icon: Code2,
-    skillFiles: ["SKILL.md", "references/api-cheatsheet.md", "references/troubleshooting.md", "templates/basic.py", "templates/math.py"],
+    skillFiles: ["SKILL.md", "references/api-cheatsheet.md", "references/troubleshooting.md", "templates/voiceover.py"],
   },
   {
     id: "visual_qa",
@@ -84,16 +94,17 @@ const AGENTS: AgentDef[] = [
     skillFiles: ["SKILL.md", "references/troubleshooting.md"],
   },
   {
-    id: "narrator",
-    label: "Narrator",
-    description: "Genera el guion y sintetiza voz",
-    icon: Mic,
-    skillFiles: ["references/narration.md"],
+    id: "scene_review",
+    label: "Scene Review",
+    description: "Aprobación por escena (gate humano)",
+    icon: LayoutGrid,
+    skillFiles: [],
+    isGate: true,
   },
   {
     id: "editor",
     label: "Editor",
-    description: "Render final y concatenación",
+    description: "Render -qh + concatenación (audio ya embebido)",
     icon: Film,
     skillFiles: [],
   },
@@ -156,15 +167,42 @@ function Connector({ active }: ConnectorProps) {
 
 interface Props {
   pipeline: PipelineState;
-  projectId?: string;
   onPluginsClick?: () => void;
+  onSceneReviewClick?: () => void;
+  onNodeClick?: (agentId: string) => void;
+  onStop?: () => void | Promise<void>;
 }
 
-export function PipelineView({ pipeline, projectId, onPluginsClick }: Props) {
+export function PipelineView({ pipeline, onPluginsClick, onSceneReviewClick, onNodeClick, onStop }: Props) {
   const [editAgent, setEditAgent] = useState<AgentDef | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const anyRunning = Object.values(pipeline).some((s) => s.status === "running");
+
+  const handleStop = async () => {
+    if (!onStop || stopping) return;
+    if (!confirm("¿Detener el pipeline? Los subprocesos en curso se matarán y el proyecto quedará en estado 'stopped'.")) return;
+    setStopping(true);
+    try { await onStop(); }
+    finally { setStopping(false); }
+  };
 
   return (
     <div className="w-full">
+      {/* Stop button — only visible while something is running */}
+      {anyRunning && onStop && (
+        <div className="flex justify-end mb-2">
+          <button
+            onClick={handleStop}
+            disabled={stopping}
+            className="inline-flex items-center gap-1.5 rounded-md border border-red-700/60 bg-red-950/40 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-900/40 disabled:opacity-50 transition-colors"
+            title="Detener el pipeline y matar subprocesos en curso"
+          >
+            {stopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5 fill-current" />}
+            {stopping ? "Deteniendo…" : "Detener pipeline"}
+          </button>
+        </div>
+      )}
+
       {/* Pipeline row — scrollable horizontally on small screens */}
       <div className="overflow-x-auto pb-4">
         <div className="flex items-center gap-0 min-w-max">
@@ -174,26 +212,50 @@ export function PipelineView({ pipeline, projectId, onPluginsClick }: Props) {
             const isActive = state.status === "running" || state.status === "ok";
             const showConnector = idx < AGENTS.length - 1;
             const hasSkills = agent.skillFiles.length > 0;
+            const isRunning = state.status === "running";
+            const isCompleted = state.status === "ok" || state.status === "error" || state.status === "degraded";
+
+            // Click priority: gate action > live logs (if running) > skill editor > historical logs
+            const showLogs = !agent.isGate && onNodeClick && (isRunning || isCompleted);
+            const showSkillEditor = !agent.isGate && !isRunning && hasSkills;
+            const clickable =
+              (agent.isGate && state.status === "waiting") ||
+              isRunning ||
+              showSkillEditor ||
+              showLogs;
+
+            const hoverBorder =
+              agent.isGate && state.status === "waiting" ? "hover:border-yellow-400" :
+              isRunning ? "hover:border-blue-400" :
+              showSkillEditor ? "hover:border-zinc-600" :
+              showLogs ? "hover:border-zinc-500" : "";
+
+            const title =
+              agent.id === "plugins" ? "Clic para gestionar plugins" :
+              agent.id === "scene_review" ? "Clic para revisar escenas" :
+              isRunning ? "Clic para ver logs en vivo" :
+              showSkillEditor ? "Clic para editar skill" :
+              showLogs ? "Clic para ver actividad" : undefined;
 
             return (
               <div key={agent.id} className="flex items-center">
                 {/* Node */}
                 <div
-                  className={`pipeline-node flex flex-col items-center gap-2 p-3.5 rounded-xl border-2 w-[120px] flex-shrink-0 transition-all duration-200 ${statusBorder(state.status)} ${statusBg(state.status)} ${
-                    agent.isGate && state.status === "waiting"
-                      ? "cursor-pointer hover:border-yellow-400"
-                      : hasSkills
-                      ? "cursor-pointer hover:border-zinc-600"
-                      : "cursor-default"
-                  }`}
+                  className={`pipeline-node flex flex-col items-center gap-2 p-3.5 rounded-xl border-2 w-[120px] flex-shrink-0 transition-all duration-200 ${statusBorder(state.status)} ${statusBg(state.status)} ${clickable ? `cursor-pointer ${hoverBorder}` : "cursor-default"}`}
                   onClick={() => {
-                    if (agent.isGate && onPluginsClick) {
+                    if (agent.isGate && agent.id === "plugins" && onPluginsClick) {
                       onPluginsClick();
-                    } else if (hasSkills) {
+                    } else if (agent.isGate && agent.id === "scene_review" && onSceneReviewClick) {
+                      onSceneReviewClick();
+                    } else if (isRunning && onNodeClick) {
+                      onNodeClick(agent.id);
+                    } else if (showSkillEditor) {
                       setEditAgent(agent);
+                    } else if (showLogs) {
+                      onNodeClick!(agent.id);
                     }
                   }}
-                  title={hasSkills ? "Clic para editar skill" : agent.isGate ? "Clic para gestionar plugins" : undefined}
+                  title={title}
                 >
                   <div className="flex items-center justify-between w-full">
                     <Icon className={`w-4 h-4 ${state.status === "pending" ? "text-zinc-600" : "text-zinc-300"}`} />
@@ -207,11 +269,15 @@ export function PipelineView({ pipeline, projectId, onPluginsClick }: Props) {
                       {agent.description}
                     </p>
                   </div>
-                  {hasSkills && (
+                  {isRunning && !agent.isGate ? (
+                    <div className="text-[9px] text-blue-400 font-medium uppercase tracking-wide">
+                      ver logs
+                    </div>
+                  ) : hasSkills ? (
                     <div className="text-[9px] text-zinc-600 font-medium uppercase tracking-wide">
                       editar skill
                     </div>
-                  )}
+                  ) : null}
                   {state.detail && (
                     <p className="text-[10px] text-zinc-400 text-center line-clamp-2">
                       {state.detail}

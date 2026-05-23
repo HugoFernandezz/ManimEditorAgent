@@ -15,26 +15,39 @@ export default function PluginsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchProject(slug).then((p) => {
+      if (p.status !== "awaiting_plugins") {
+        // Pipeline already advanced past this gate — go back to project
+        router.replace(`/project/${slug}`);
+        return;
+      }
       setPlugins(p.plugins_proposal ?? []);
       setLoading(false);
     });
-  }, [slug]);
+  }, [slug, router]);
 
   const toggle = (name: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
       return next;
     });
   };
 
   const handleConfirm = async () => {
     setConfirming(true);
-    await confirmPlugins(slug, Array.from(selected));
-    router.push(`/project/${slug}`);
+    setConfirmError(null);
+    try {
+      await confirmPlugins(slug, Array.from(selected));
+      router.push(`/project/${slug}`);
+    } catch (e) {
+      setConfirmError(e instanceof Error ? e.message : "Error al confirmar plugins");
+      setConfirming(false);
+    }
   };
 
   return (
@@ -53,9 +66,12 @@ export default function PluginsPage() {
       {loading && <p className="text-zinc-500 text-sm">Cargando propuestas...</p>}
 
       {!loading && plugins.length === 0 && (
-        <div className="text-center py-16 border border-dashed border-zinc-700 rounded-xl">
-          <Package className="w-10 h-10 mx-auto text-zinc-600 mb-3" />
-          <p className="text-zinc-400 mb-2">No se encontraron plugins relevantes</p>
+        <div className="text-center py-16 border border-dashed border-zinc-700 rounded-xl space-y-3">
+          <Package className="w-10 h-10 mx-auto text-zinc-600" />
+          <p className="text-zinc-400">No se encontraron plugins relevantes</p>
+          {confirmError && (
+            <p className="text-sm text-red-400">{confirmError}</p>
+          )}
           <Button onClick={handleConfirm} disabled={confirming}>
             {confirming ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
             Continuar sin plugins
@@ -102,6 +118,12 @@ export default function PluginsPage() {
               </div>
             </div>
           ))}
+
+          {confirmError && (
+            <div className="rounded-lg border border-red-800 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+              {confirmError}
+            </div>
+          )}
 
           <div className="flex gap-3 pt-4">
             <Button

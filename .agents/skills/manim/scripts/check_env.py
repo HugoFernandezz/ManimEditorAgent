@@ -57,7 +57,9 @@ def main() -> int:
     print("\n[Python packages]")
     print(f"  manim (CE)        : {manim_ce or 'NOT INSTALLED'}")
     print(f"  manimgl (GL)      : {manim_gl or 'NOT INSTALLED'}")
-    print(f"  manim-voiceover   : {voiceover or 'not installed (optional)'}")
+    # manim-voiceover is auto-installed by the pipeline (orchestrator step 3b),
+    # so a missing package here is informational — the pipeline will fix it.
+    print(f"  manim-voiceover   : {voiceover or 'not installed (auto-installed at run-time)'}")
 
     # --- System binaries ---
     print("\n[System binaries]")

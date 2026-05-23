@@ -16,6 +16,17 @@ from harness.runner import call_agent, AgentCallFailed
 from harness.guardrails import extract_json_array, plugins_proposal_valid
 from harness.prompts import RESEARCHER
 
+# Packages the pipeline always installs itself — never propose them to the user.
+_CORE_PACKAGES = frozenset({
+    "manim-voiceover", "manim_voiceover",
+    "manim",
+    "gtts",
+})
+
+
+def _filter_core(plugins: list[dict]) -> list[dict]:
+    return [p for p in plugins if p.get("name", "").lower() not in _CORE_PACKAGES]
+
 
 def _validator(raw: str) -> tuple[bool, str]:
     ok, parsed = extract_json_array(raw)
@@ -43,6 +54,7 @@ def run(project_id: str, idea: str, project_path: Path) -> list[dict]:
         return []
 
     _, plugins = extract_json_array(raw)
+    plugins = _filter_core(plugins)
     (project_path / "plugins_proposal.json").write_text(
         json.dumps(plugins, ensure_ascii=False, indent=2), encoding="utf-8",
     )

@@ -45,23 +45,30 @@ proyectoManim/
 │   ├── orchestrator.py              ← state machine del pipeline (sync, corre en thread)
 │   ├── project_store.py             ← CRUD de manifests en projects/
 │   ├── claude_runner.py             ← wrapper de `claude -p` CLI
-│   ├── events.py                    ← 20 tipos de PipelineEvent tipados
-│   ├── sessions.py                  ← deprecated (era para SDK, ya no se usa)
+│   ├── events.py                    ← tipos de PipelineEvent tipados
 │   ├── requirements.txt             ← fastapi, uvicorn, pydantic, aiofiles
+│   ├── harness/                     ← capa de harness engineering
+│   │   ├── events.py / store.py     ← event-sourced log (events.jsonl)
+│   │   ├── runner.py                ← call_agent con retry+validator+metrics
+│   │   ├── prompts.py               ← templates versionados
+│   │   ├── guardrails.py            ← validadores estructurales
+│   │   ├── graders.py               ← code-based + LLM-as-judge
+│   │   ├── telemetry.py             ← métricas OTel gen-ai
+│   │   └── evals.py                 ← suite offline pass@k
 │   ├── agents/
 │   │   ├── researcher.py
 │   │   ├── planner.py
+│   │   ├── beat_writer.py
 │   │   ├── coder.py
 │   │   ├── visual_qa.py
-│   │   ├── narrator.py
 │   │   ├── editor.py                ← no usa LLM, solo ffmpeg + manim
 │   │   └── curator.py
 │   └── tools/
 │       ├── extract_frames.py        ← ffmpeg: video → N PNG
-│       ├── mux_audio.py             ← ffmpeg: video + wav → mp4
 │       ├── concat_scenes.py         ← ffmpeg concat demuxer
 │       ├── plugin_installer.py      ← pip install + verificación import
-│       ├── tts_adapter.py           ← interfaz TTS pluggable (stub silencioso por defecto)
+│       ├── plugin_context.py        ← construye el contexto de plugins inyectado en prompts
+│       ├── scene_utils.py           ← helpers comunes (e.g. get_scene_name)
 │       └── skill_diff.py            ← genera/aplica diffs a archivos de skill
 │
 ├── ui/                              ← Next.js App Router
@@ -84,12 +91,13 @@ proyectoManim/
 │   └── lib/api.ts                   ← cliente REST + WebSocket hook
 │
 └── projects/<slug>/                 ← generado en runtime, en .gitignore parcial
-    ├── manifest.json                ← estado del proyecto/video
+    ├── manifest.json                ← estado del proyecto/video (incluye `scenes` dict)
+    ├── events.jsonl                 ← event-sourced trace (harness)
     ├── plugins_proposal.json
     ├── outline.md
-    ├── scenes/scene_NN.py
+    ├── beats/scene_NN.beats.json    ← Beat Writer: 2-5 beats/escena para sync voz↔anim
+    ├── scenes/scene_NN.py           ← VoiceoverScene (audio embebido)
     ├── renders/scene_NN/{preview.mp4, frames/, qa_notes.md}
-    ├── audio/{script.txt, scene_NN.wav}
     ├── final/video_{lang}.mp4
     ├── feedback.json
     └── learnings/{notes.md, skill_patch.diff}
@@ -130,15 +138,22 @@ Cada video es una invocación fresh de `claude -p --no-session-persistence`. Nin
 
 ### Tabla de agentes
 
-| Agente | Archivo | Modelo | Tools | Skill files que lee |
-|--------|---------|--------|-------|---------------------|
-| **Researcher** | `agents/researcher.py` | sonnet | WebSearch, WebFetch | — |
-| **Planner** | `agents/planner.py` | sonnet | — | `SKILL.md` |
-| **Coder** | `agents/coder.py` | opus | — | `SKILL.md`, `api-cheatsheet.md`, `troubleshooting.md`, templates |
-| **Visual QA** | `agents/visual_qa.py` | opus | Read (imágenes) | `SKILL.md`, `troubleshooting.md` |
-| **Narrator** | `agents/narrator.py` | sonnet | — | `references/narration.md` |
-| **Editor** | `agents/editor.py` | — (ffmpeg) | — | — |
-| **Curator** | `agents/curator.py` | sonnet | — | `SKILL.md`, `troubleshooting.md` |
+| Agente | Archivo | Modelo | Tools | Skills (inline o vía tool) |
+|--------|---------|--------|-------|----------------------------|
+| **Researcher** | `agents/researcher.py` | sonnet | `WebSearch,WebFetch` | — |
+| **Planner** | `agents/planner.py` | sonnet | **— (sin tools)** | `SKILL.md` (+ `3b1b-style.md` si la idea lo menciona) — inline |
+| **Beat Writer** | `agents/beat_writer.py` | sonnet | **— (sin tools)** | `references/narration.md`, `templates/voiceover.py` — inline |
+| **Coder** | `agents/coder.py` | opus | **— (sin tools)** | `SKILL.md` + `api-cheatsheet.md` + `templates/voiceover.py` + `narration.md` + `troubleshooting.md` (+ `3b1b-style.md` condicional) — inline |
+| **Visual QA** | `agents/visual_qa.py` | opus | `Read,Glob` (Read multimodal sobre PNG + troubleshooting.md) | `troubleshooting.md` (vía tool) |
+| **Editor** | `agents/editor.py` | — (solo ffmpeg) | — | — |
+| **Curator** | `agents/curator.py` | sonnet | **— (sin tools)** | `SKILL.md`, `troubleshooting.md` — inline |
+
+**Importante sobre tools vs inline:** Researcher y Visual_QA son los únicos que usan tools.
+El Researcher necesita `WebSearch/WebFetch` para verificar plugins reales. Visual_QA usa `Read`
+porque la única forma de visión multimodal con `claude -p` es leer un PNG vía tool. **Todos los
+demás agentes inyectan las skills inline en el prompt** — esto reduce el consumo de tokens
+~5-10× porque evita el bucle agéntico de la CLI (cada `Read` tool call son varios roundtrips
+y el system prompt se reenvía cada turno).
 
 ### Secuencia del pipeline
 
@@ -147,26 +162,30 @@ check_env.py
      ↓
 Researcher  →  plugins_proposal.json
      ↓ (pausa — usuario aprueba plugins en UI)
-plugin_installer × N
+plugin_installer × N (+ auto-install manim-voiceover[gtts])
      ↓
 Planner  →  outline.md
      ↓
-Por cada escena (secuencial):
-  Coder  →  scene_NN.py
-    ↓ render_verify.py (hasta 3 ciclos de fix)
-  render -ql  →  preview.mp4
+Beat Writer  →  beats/scene_NN.beats.json (2-5 beats por escena)
+     ↓
+Por cada escena (PARALELO, hasta 4 workers):
+  Coder  →  scenes/scene_NN.py (VoiceoverScene con `with self.voiceover(...)` por beat)
+    ↓ grade_scene_renderable (hasta 3 ciclos de fix con Coder.fix)
+  render -ql  →  preview.mp4 (audio gTTS ya embebido)
   extract_frames  →  6 PNG
   Visual QA  →  qa_notes.md
     ↓ si needs_fix: Coder aplica fix_hint (hasta 3 ciclos)
      ↓
-Narrator  →  script.txt + scene_NN.wav (TTS o silencioso)
+(pausa — usuario revisa CADA escena: approve / revise con feedback)
      ↓
-Editor  →  render -qh + mux + concat  →  final/video_{lang}.mp4
-     ↓ (pausa — usuario revisa y aprueba en UI)
+Editor (no LLM)  →  render -qh + concat  →  final/video_{lang}.mp4
+     ↓ (pausa — usuario revisa video final y aprueba)
 Curator  →  learnings/notes.md + skill_patch.diff
      ↓ (usuario acepta/rechaza hunks en UI)
 skill file actualizado
 ```
+
+**No hay Narrator separado.** El audio se genera dentro del propio render de Manim vía `manim-voiceover` + `GTTSService`, beat a beat. El plugin se autoinstala al confirmar plugins (`tools.plugin_installer.ensure_installed`).
 
 ### Cómo las skills se leen
 
@@ -215,17 +234,28 @@ Los archivos editables están en una allowlist en `main.py` (`_ALLOWED_SKILL_FIL
 
 ```
 pipeline_started, env_check_ok, env_check_failed,
-agent_started, agent_finished, agent_error,
+agent_started, agent_stream_line,
 plugins_proposed, plugins_installed,
-outline_ready,
+outline_ready, beats_ready,
 scene_started, render_ok, render_failed,
 frames_extracted, qa_ok, qa_issue, qa_degraded,
-narration_ready, edit_done,
+scene_preview_ready, scene_revising, scene_approved, scenes_all_approved,
+finalizing, edit_done,
 review_submitted, curator_done, patch_applied,
 log, error
 ```
 
+`agent_stream_line` lleva las líneas de tool_use / text del bucle agéntico del CLI (parseadas en `parse_stream_event`), y es lo que muestra el panel lateral cuando el usuario clica un nodo en ejecución. Para agentes sin tools (Planner/Beat Writer/Curator) el harness emite 2 líneas sintéticas ("Generando…" + "Output recibido N chars") para que el panel no aparezca vacío.
+
 El frontend actualiza los nodos del `PipelineView` y el tab en función de estos eventos.
+
+### Comportamiento al clicar un nodo (ui/components/pipeline-view.tsx)
+
+Prioridad del onClick (decidido en este orden):
+1. Si es gate (`plugins` / `scene_review`): navega a su página
+2. Si el nodo está **running**: abre el panel lateral con los logs en vivo
+3. Si NO está running y tiene skills: abre el editor de skill
+4. Si NO está running, sin skills, pero ya completó (ok/error/degraded): abre el panel de logs histórico
 
 ---
 
@@ -236,7 +266,7 @@ El frontend actualiza los nodos del `PipelineView` y el tab en función de estos
   "id": "derivadas-bachillerato",
   "name": "Derivadas para bachillerato",       // nombre del proyecto
   "description": "...",
-  "status": "draft | running | awaiting_plugins | awaiting_review | curated | error",
+  "status": "draft | running | awaiting_plugins | planning_done | awaiting_scene_review | scenes_approved | awaiting_review | review_submitted | curated | error | env_failed",
   "created_at": "2026-...",
   // Campos de video (null hasta que el usuario lanza start-video):
   "idea": "Explica la derivada en un punto",
@@ -245,9 +275,17 @@ El frontend actualiza los nodos del `PipelineView` y el tab en función de estos
   "target_length": "60s",
   "voice_profile": null,
   "export_langs": [],
-  "tts_backend": "stub",
   "plugins": {},                               // resultado del installer
   "plugins_proposal": [],                      // propuesta del Researcher
+  "scenes": {                                  // poblado por init_scene_states
+    "01": {
+      "status": "pending|rendering|awaiting_review|revising|approved|failed",
+      "preview_path": "projects/.../renders/scene_01/preview.mp4",
+      "feedback_history": [{"ts": "...", "text": "..."}],
+      "scene_desc": "primeros 300 chars del bloque del outline",
+      "error": "..."                           // si status=failed
+    }
+  },
   "final_video": "projects/.../final/video_es.mp4"
 }
 ```
@@ -259,14 +297,16 @@ El frontend actualiza los nodos del `PipelineView` y el tab en función de estos
 | Decisión | Razón |
 |----------|-------|
 | `claude -p` CLI en vez del SDK | Usa Claude Pro del usuario (sin coste extra de API) |
-| Pipeline **síncrono** en worker thread | Simplicidad; GPU/CPU no se saturan con escenas en paralelo |
+| Pipeline **síncrono** en worker thread con escenas en paralelo (max 4) | Simplicidad + throughput |
 | `--no-session-persistence` en cada invocación | Contexto completamente aislado entre videos |
-| Visual QA usa `--tools Read` (multimodal) | Claude Code puede leer PNG directamente; no hay base64 manual |
+| Visual QA usa `--tools Read,Glob` (multimodal) | Claude Code puede leer PNG directamente; no hay base64 manual |
 | Researcher usa `--tools WebSearch,WebFetch` | Búsqueda real en plugins.manim.community en lugar de training data |
-| Skills se leen con `Path.read_text()` | Sin RAG; el contexto cabe en el prompt de sonnet/opus |
+| Planner/Beat Writer/Coder/Curator **sin tools**, skill inyectado en prompt | Reduce tokens ~5-10× vs. el bucle agéntico de tool calls (cada Read = varios roundtrips, y el system prompt se reenvía cada turno) |
+| Audio embebido en el render Manim (VoiceoverScene) | No hay paso de mux post-render: cada escena ya sale con su narración sincronizada vía `tracker.duration` |
+| Beats como unidad atómica de sync voz↔anim | El Beat Writer produce 2-5 beats/escena; el Coder emite un `with self.voiceover(...)` por beat |
 | Curator propone diffs, el usuario aprueba | Las skills son contexto crítico — no se modifican en silencio |
 | Proyectos y videos son entidades separadas | El usuario puede crear el proyecto y configurar el video más tarde |
-| TTS es un stub enchufable | El backend real (XTTS/F5/Piper) se elige después |
+| Per-scene review con revise/approve | El usuario aprueba escena por escena antes del render final -qh |
 
 ---
 
@@ -293,6 +333,18 @@ python .agents/skills/manim/scripts/check_env.py
 ```
 
 El usuario debe estar autenticado en Claude Code (`claude auth`) para que `claude -p` funcione.
+
+---
+
+## Quirks de la CLI / Windows (no te tropieces otra vez)
+
+Estos son detalles no obvios de cómo invocamos `claude -p` que ya nos rompieron en el pasado. Están todos en `backend/claude_runner.py`:
+
+1. **El prompt va PRIMERO**, justo después de `-p`. Pasarlo al final (tras `--add-dir` u otros flags) hace que la CLI lo rechace con `"Input must be provided either through stdin or as a prompt argument."`.
+2. **`encoding="utf-8", errors="replace"` en `subprocess.run` / `Popen`** — en Windows el default es cp1252; sin esto, la salida UTF-8 de `claude -p` se decodifica mal y todos los acentos / `¿` / `—` se vuelven mojibake (`Ã©`, `Â¿`, `â€"`). El archivo escrito a disco luego se ve mal aunque `write_text(..., encoding="utf-8")` sea correcto.
+3. **`--verbose` es obligatorio cuando `--output-format=stream-json`** (CLI 2.1.x). La combinación `--print --output-format=stream-json` sin `--verbose` falla al instante con un mensaje claro pero los reintentos no aportan nada — se añade automáticamente en `run_with_tools` cuando hay `on_event`.
+4. **Guard contra stdout vacío con returncode 0** — la CLI a veces sale OK sin producir nada. `_exec_json` detecta `stdout` vacío y lanza un mensaje explícito en vez de dejar que `json.loads(None/"")` peté con un `TypeError` críptico.
+5. **`set_stream_emit` es per-thread (threading.local)**. Cualquier agente cuya llamada deba surfar líneas al panel de la UI necesita que su thread tenga el emitter registrado. Lo hacen: `_run_scene_initial` (threads de escenas) y `run_pipeline_after_plugins` (thread principal stage-2).
 
 ---
 
@@ -350,9 +402,8 @@ Resultados en `evals/runs/<timestamp>/{results.json, summary.json}`.
 
 ## Cosas pendientes / fuera de alcance actual
 
-- [ ] Backend real de voz clonada (XTTS v2, F5-TTS, Piper) — `tts_adapter.py` tiene la interfaz lista
+- [ ] Backend real de voz clonada (XTTS v2, F5-TTS, Piper) en lugar de gTTS
 - [ ] Traducción automática del script a otros idiomas (la estructura multi-idioma ya existe en el manifest)
-- [ ] Paralelización de escenas (secuencial por ahora)
 - [ ] Autenticación / multiusuario en la UI (actualmente single-user local)
 - [ ] Dockerización
 - [ ] Tests automatizados

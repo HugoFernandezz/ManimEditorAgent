@@ -64,6 +64,30 @@ def python_code_well_formed(code: str) -> tuple[bool, str]:
         return False, f"syntax error line {e.lineno}: {e.msg}"
 
 
+def voiceover_scene_well_formed(code: str, expected_beats: int | None = None) -> tuple[bool, str]:
+    """Strict check: VoiceoverScene + set_speech_service + one voiceover block per beat.
+
+    Catches malformed Coder output BEFORE we spend a render attempt. If
+    `expected_beats` is None we only enforce ≥1 voiceover block.
+    """
+    ok, msg = python_code_well_formed(code)
+    if not ok:
+        return False, msg
+    if "VoiceoverScene" not in code:
+        return False, "class must inherit from VoiceoverScene"
+    if "set_speech_service" not in code:
+        return False, "missing self.set_speech_service(...) call"
+    n_blocks = len(re.findall(r"with\s+self\.voiceover\s*\(", code))
+    if n_blocks == 0:
+        return False, "no `with self.voiceover(...)` block found"
+    if expected_beats is not None and n_blocks != expected_beats:
+        return False, (
+            f"voiceover block count mismatch: code has {n_blocks}, "
+            f"beats spec has {expected_beats}"
+        )
+    return True, "ok"
+
+
 def plugins_proposal_valid(parsed: Any) -> tuple[bool, str]:
     if not isinstance(parsed, list):
         return False, "expected a list"
@@ -79,9 +103,18 @@ def plugins_proposal_valid(parsed: Any) -> tuple[bool, str]:
 
 
 def qa_report_valid(yaml_text: str) -> tuple[bool, str]:
-    """Best-effort check; we don't fully parse YAML (no extra dep)."""
+    """Best-effort check; we don't fully parse YAML (no extra dep).
+
+    Enforces that the agent actually reviewed frames — guards against the
+    model hallucinating 'status: ok' without ever calling the Read tool.
+    """
     if "status:" not in yaml_text:
         return False, "missing status field"
     if "needs_fix" not in yaml_text and "ok" not in yaml_text:
         return False, "status must be 'ok' or 'needs_fix'"
+    m = re.search(r"frames_reviewed\s*:\s*(\d+)", yaml_text)
+    if not m:
+        return False, "missing frames_reviewed field — did you actually Read the frames?"
+    if int(m.group(1)) == 0:
+        return False, "frames_reviewed=0 — Read each frame before grading"
     return True, "ok"

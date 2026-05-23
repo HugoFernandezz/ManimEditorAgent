@@ -9,15 +9,12 @@ We compute pass@1 and pass@3 per task (Anthropic non-determinism handling).
 """
 from __future__ import annotations
 import json
-import sys
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from harness.graders import (
-    grade_outline_structure, grade_scene_renderable, Grade,
-)
+from harness.graders import grade_outline_structure
 
 EVAL_ROOT = Path(__file__).parent.parent.parent / "evals"
 
@@ -105,10 +102,12 @@ def run_suite(repeats: int = 1, only: str | None = None) -> Path:
                     project_id=f"_eval_{task.id}_{attempt}",
                     agent="planner",
                     prompt=PLANNER.render(
-                        skill=skill_md, idea=task.idea, lang=task.lang,
+                        plugin_context="", skill_md=skill_md, style_section="",
+                        idea=task.idea, lang=task.lang,
                         audience=task.audience, target_length=task.target_length,
                     ),
                     system=PLANNER.system, model="sonnet",
+                    tools=None,
                     timeout=120, max_attempts=2,
                 )
                 g = grade_outline_structure(outline)
@@ -158,20 +157,18 @@ def _summarize(results: list[EvalResult], repeats: int) -> dict:
     return out
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python -m harness.evals run [--repeats N] [--only <task_id>]")
-        sys.exit(1)
-    cmd = sys.argv[1]
-    if cmd == "run":
-        repeats = 1
-        only = None
-        for i, arg in enumerate(sys.argv[2:]):
-            if arg == "--repeats" and i + 1 < len(sys.argv) - 2:
-                repeats = int(sys.argv[i + 3])
-            if arg == "--only" and i + 1 < len(sys.argv) - 2:
-                only = sys.argv[i + 3]
-        run_suite(repeats=repeats, only=only)
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+    parser = argparse.ArgumentParser(prog="harness.evals")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    run_p = sub.add_parser("run", help="Run the offline eval suite")
+    run_p.add_argument("--repeats", type=int, default=1,
+                       help="Attempts per task (computes pass@1 and pass^k)")
+    run_p.add_argument("--only", type=str, default=None,
+                       help="Run only the task with this id")
+    args = parser.parse_args(argv)
+    if args.cmd == "run":
+        run_suite(repeats=args.repeats, only=args.only)
 
 
 if __name__ == "__main__":
