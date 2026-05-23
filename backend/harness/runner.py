@@ -16,6 +16,7 @@ from claude_runner import run_text, run_with_tools, parse_stream_event
 from harness.events import AgentEvent
 from harness.store import append_event
 from harness.telemetry import measure, metric_event
+from harness import debug_log
 
 
 Validator = Callable[[str], tuple[bool, str]]  # (raw_output) -> (ok, message_or_repair)
@@ -75,6 +76,13 @@ def call_agent(
             payload={"model": model, "tools": tools, "previous_error": last_error or None},
         ))
 
+        # ── Debug log: agent call with full prompt/system ──────────────────
+        debug_log.agent_call(
+            project_id, agent, model, tools, scene,
+            attempt, max_attempts, prompt, system,
+        )
+
+        t0 = time.perf_counter()
         try:
             with measure(agent, model, scene) as m:
                 m["input_chars"] = len(prompt) + len(system)
@@ -113,23 +121,31 @@ def call_agent(
                     )
                 m["output_chars"] = len(output)
         except Exception as e:
+            elapsed = time.perf_counter() - t0
             last_error = f"subprocess error: {e}"
             append_event(project_id, AgentEvent(
                 kind="metric.emitted", agent=agent, scene=scene, attempt=attempt,
                 payload={"outcome": "error", "error": last_error[:500]},
             ))
             if attempt < max_attempts:
-                time.sleep(_backoff(attempt))
+                backoff = _backoff(attempt)
+                debug_log.agent_retry(
+                    project_id, agent, scene, attempt, max_attempts, backoff, last_error
+                )
+                time.sleep(backoff)
                 continue
+            debug_log.agent_failed(project_id, agent, scene, attempt, last_error, e)
             append_event(project_id, AgentEvent(
                 kind="agent.failed", agent=agent, scene=scene, attempt=attempt,
                 payload={"reason": "subprocess_exhausted", "error": last_error[:500]},
             ))
             raise AgentCallFailed(last_error)
 
+        elapsed = time.perf_counter() - t0
         append_event(project_id, metric_event(agent, scene, m))
 
         if validator is None:
+            debug_log.agent_done(project_id, agent, scene, attempt, elapsed, output)
             append_event(project_id, AgentEvent(
                 kind="agent.completed", agent=agent, scene=scene, attempt=attempt,
                 payload={"output_chars": len(output)},
@@ -138,6 +154,7 @@ def call_agent(
 
         ok, msg = validator(output)
         if ok:
+            debug_log.agent_done(project_id, agent, scene, attempt, elapsed, output)
             append_event(project_id, AgentEvent(
                 kind="agent.completed", agent=agent, scene=scene, attempt=attempt,
                 payload={"output_chars": len(output), "validation": "passed"},
@@ -146,6 +163,7 @@ def call_agent(
 
         # Validator rejected — 12-Factor #9: compact error into next prompt
         last_error = msg
+        debug_log.guardrail_violated(project_id, agent, scene, attempt, msg)
         append_event(project_id, AgentEvent(
             kind="guardrail.violated", agent=agent, scene=scene, attempt=attempt,
             payload={"validator_error": msg[:300]},
@@ -156,8 +174,13 @@ def call_agent(
             f"Error: {msg}\nFix your output and respond again. Do not apologize."
         )
         if attempt < max_attempts:
-            time.sleep(_backoff(attempt))
+            backoff = _backoff(attempt)
+            debug_log.agent_retry(
+                project_id, agent, scene, attempt, max_attempts, backoff, msg
+            )
+            time.sleep(backoff)
 
+    debug_log.agent_failed(project_id, agent, scene, max_attempts, last_error)
     append_event(project_id, AgentEvent(
         kind="agent.failed", agent=agent, scene=scene, attempt=max_attempts,
         payload={"reason": "validator_exhausted", "error": last_error[:500]},

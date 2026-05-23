@@ -32,6 +32,7 @@ from tools.plugin_context import build_plugin_context
 from tools.extract_frames import extract_frames as _extract_frames_tool
 from tools.scene_utils import get_scene_name as _get_scene_name
 from harness.runner import set_stream_emit
+from harness import debug_log
 import claude_runner
 
 SKILL_ROOT = Path(__file__).parent.parent / ".agents" / "skills" / "manim"
@@ -130,29 +131,50 @@ def run_pipeline(project_id: str, emit: Emit) -> None:
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
 
+    # ── Debug log: fresh run file ──────────────────────────────────────────
+    debug_log.new_run(project_id)
+    debug_log.pipeline_start(project_id, manifest)
+
     def _stream_line(agent: str, scene: int | None, entry: dict) -> None:
         _ws(emit, project_id, "agent_stream_line", agent=agent, scene=scene, **entry)
     set_stream_emit(_stream_line)
 
+    _t0_pipeline = time.perf_counter()
     try:
         append_event(project_id, AgentEvent(kind="pipeline.started",
                                             payload={"idea": manifest["idea"]}))
         update_manifest(project_id, {"status": "running"})
         _ws(emit, project_id, "pipeline_started")
+        debug_log.ui_state(project_id,
+            "Todos los nodos = idle/gris | Tab 'Ejecución' activo | Spinner en cabecera",
+            "F5 → status=running → UI muestra pipeline vacío con nodos grises")
 
         # 1. Env check
-        result = subprocess.run([sys.executable, str(CHECK_ENV)], capture_output=True, text=True)
+        debug_log.stage(project_id, "env_check")
+        cmd_env = [sys.executable, str(CHECK_ENV)]
+        t0 = time.perf_counter()
+        result = subprocess.run(cmd_env, capture_output=True, text=True)
+        debug_log.subprocess_result(project_id, "check_env.py", cmd_env, result,
+                                    time.perf_counter() - t0)
         if result.returncode != 0:
             msg = (result.stdout + result.stderr)[:500]
+            debug_log.error(project_id, f"Env check FAILED: {msg}")
             append_event(project_id, AgentEvent(kind="pipeline.failed",
                                                 payload={"reason": "env_check", "detail": msg}))
             update_manifest(project_id, {"status": "env_failed"})
             _ws(emit, project_id, "env_check_failed", message=msg)
+            debug_log.ui_state(project_id,
+                "Nodo env_check = ERROR (rojo) | UI muestra banner de error con el mensaje de fallo",
+                "F5 → status=env_failed → UI muestra banner de error, todos los nodos bloqueados")
+            debug_log.pipeline_end(project_id, "env_failed", time.perf_counter() - _t0_pipeline)
             return
         _ws(emit, project_id, "env_check_ok", output=result.stdout)
+        debug_log.ui_state(project_id,
+            "Env check = OK (verde/check) | Pipeline listo para continuar")
 
         # 2. Researcher (optional — user can skip from the start-video form)
         if manifest.get("skip_research"):
+            debug_log.info(project_id, "Researcher skipped by user — jumping straight to Stage 2")
             _ws(emit, project_id, "log", message="Investigación de plugins omitida por el usuario — saltando al Planner")
             append_event(project_id, AgentEvent(
                 kind="pipeline.resumed",
@@ -163,22 +185,34 @@ def run_pipeline(project_id: str, emit: Emit) -> None:
                 "plugins_proposal": [],
                 "plugins": {},
             })
-            # Skip the awaiting_plugins gate entirely — go straight to stage 2
-            # with no approved plugins. manim-voiceover is still auto-installed.
             run_pipeline_after_plugins(project_id, approved_plugins=[], emit=emit)
             return
 
+        debug_log.stage(project_id, "researcher")
         _ws(emit, project_id, "agent_started", agent="researcher")
+        debug_log.ui_state(project_id,
+            "Nodo 'Researcher' = RUNNING (azul/animado) | Panel lateral vacío hasta output | "
+            "Resto de nodos = idle | Usuario puede clicar el nodo para ver logs en vivo")
         _check_cancel(project_id)
         plugins = researcher.run(project_id, manifest["idea"], proj)
+        debug_log.info(project_id, f"Researcher proposed {len(plugins)} plugin(s): {[p.get('name') for p in plugins]}")
         _ws(emit, project_id, "plugins_proposed", plugins=plugins)
         update_manifest(project_id, {"status": "awaiting_plugins", "plugins_proposal": plugins})
         append_event(project_id, AgentEvent(kind="pipeline.paused",
                                             payload={"reason": "awaiting_plugins"}))
+        debug_log.ui_state(project_id,
+            "Nodo 'Researcher' = DONE (verde) | Nodo 'Plugins Gate' = HIGHLIGHTED (amarillo) | "
+            "Tab 'Plugins' aparece en la barra de navegación del proyecto | "
+            "UI muestra checkboxes con los plugins propuestos, botón 'Confirmar selección'",
+            "F5 → status=awaiting_plugins → UI redirige automáticamente a /project/{id}/plugins | "
+            "Researcher=done, Plugins Gate=activo esperando acción humana")
+        debug_log.info(project_id, "Pipeline paused — awaiting plugin approval from user")
 
     except PipelineCancelled as e:
+        debug_log.warning(project_id, f"Pipeline cancelled: {e}")
         _on_cancelled(project_id, emit, str(e))
     except Exception as e:
+        debug_log.error(project_id, f"Unhandled exception in run_pipeline: {e}", e)
         _handle_pipeline_exception(project_id, emit, e, "unhandled")
 
 
@@ -194,6 +228,10 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
         _ws(emit, project_id, "agent_stream_line", agent=agent, scene=scene, **entry)
     set_stream_emit(_pipeline_stream)
 
+    debug_log.ensure_run(project_id)
+    debug_log.stage(project_id, "plugins_install",
+                    f"approved={approved_plugins or '[]'}")
+
     try:
         append_event(project_id, AgentEvent(kind="pipeline.resumed",
                                             payload={"after": "plugins"}))
@@ -203,8 +241,10 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
             results = {}
             for pkg in approved_plugins:
                 _check_cancel(project_id)
+                debug_log.info(project_id, f"Installing plugin: {pkg}")
                 res = install_plugin(pkg)
                 results[pkg] = res
+                debug_log.info(project_id, f"Plugin {pkg}: status={res.get('status')}  {res}")
                 append_event(project_id, AgentEvent(
                     kind="tool.completed", agent="plugin_installer",
                     payload={"package": pkg, **res},
@@ -215,19 +255,26 @@ def run_pipeline_after_plugins(project_id: str, approved_plugins: list[str], emi
 
         # 3b. Auto-install manim-voiceover
         _check_cancel(project_id)
+        debug_log.info(project_id, "Auto-installing manim-voiceover[gtts]")
         vo_res = ensure_installed("manim-voiceover", extras="gtts")
+        debug_log.info(project_id, f"manim-voiceover[gtts]: {vo_res}")
         append_event(project_id, AgentEvent(
             kind="tool.completed", agent="plugin_installer",
             payload={"package": "manim-voiceover", "auto": True, **vo_res},
         ))
         _ws(emit, project_id, "log", message=f"manim-voiceover[gtts]: {vo_res['status']}")
         _ws(emit, project_id, "plugins_installed")
+        debug_log.ui_state(project_id,
+            "Nodo 'Plugins Gate' = DONE (verde/check) | Pipeline continúa automáticamente | "
+            "Nodo 'Planner' aparece como siguiente activo")
 
         _stage2_planner_through_scenes(project_id, emit)
 
     except PipelineCancelled as e:
+        debug_log.warning(project_id, f"Pipeline cancelled during plugin/planner stage: {e}")
         _on_cancelled(project_id, emit, str(e))
     except Exception as e:
+        debug_log.error(project_id, f"Unhandled exception in run_pipeline_after_plugins: {e}", e)
         _handle_pipeline_exception(project_id, emit, e, "unhandled")
 
 
@@ -249,7 +296,11 @@ def _stage2_planner_through_scenes(
     # 4. Planner (skip if outline already provided)
     _check_cancel(project_id)
     if outline is None:
+        debug_log.stage(project_id, "planner")
         _ws(emit, project_id, "agent_started", agent="planner")
+        debug_log.ui_state(project_id,
+            "Nodo 'Planner' = RUNNING (azul/animado) | Panel lateral muestra '⏳ Generando con sonnet...' | "
+            "Clicar el nodo abre el panel lateral con el progreso en vivo")
         outline = planner.run(
             project_id, manifest["idea"], proj,
             lang=lang,
@@ -257,25 +308,38 @@ def _stage2_planner_through_scenes(
             target_length=manifest.get("target_length", "60s"),
             plugin_context=plugin_context,
         )
+        debug_log.info(project_id, f"Outline ready — {len(outline):,} chars")
         _ws(emit, project_id, "outline_ready", outline=outline)
         update_manifest(project_id, {"status": "planning_done"})
+        debug_log.ui_state(project_id,
+            "Nodo 'Planner' = DONE (verde) | Outline disponible (visible en panel lateral)")
     else:
+        debug_log.info(project_id, "Reusing existing outline.md — skipping Planner")
         _ws(emit, project_id, "log", message="Reutilizando outline.md existente — saltando Planner")
         _ws(emit, project_id, "outline_ready", outline=outline)
 
     # 5. Beat Writer (skip if beats already provided)
     _check_cancel(project_id)
     if beats_by_scene is None:
+        debug_log.stage(project_id, "beat_writer")
         _ws(emit, project_id, "agent_started", agent="beat_writer")
+        debug_log.ui_state(project_id,
+            "Nodo 'Beat Writer' = RUNNING (azul/animado) | Panel lateral muestra '⏳ Generando con sonnet...' | "
+            "Planner = DONE (verde), flecha Planner→BeatWriter resaltada")
         beats_by_scene = beat_writer.run(
             project_id, outline, proj,
             lang=lang,
             fmt=manifest.get("format", "youtube"),
             target_length=manifest.get("target_length", "60s"),
         )
+        debug_log.info(project_id, f"Beats ready — {len(beats_by_scene)} scene(s): {sorted(beats_by_scene.keys())}")
     else:
+        debug_log.info(project_id, "Reusing existing beats — skipping Beat Writer")
         _ws(emit, project_id, "log", message="Reutilizando beats existentes — saltando Beat Writer")
     _ws(emit, project_id, "beats_ready", scenes=sorted(beats_by_scene.keys()))
+    debug_log.ui_state(project_id,
+        f"Nodo 'Beat Writer' = DONE (verde) | Beats listos para {len(beats_by_scene)} escena(s) | "
+        "Siguiente: Coder + escenas en paralelo")
 
     # 6. Initialize per-scene state and launch parallel rendering
     _check_cancel(project_id)
@@ -301,6 +365,12 @@ def _stage2_planner_through_scenes(
     # Dedicated event so the frontend re-fetches the manifest and re-applies
     # the baseline (without this, the UI stays stuck on the "running" snapshot).
     _ws(emit, project_id, "scenes_all_rendered")
+    debug_log.ui_state(project_id,
+        "Nodo 'Scene Review Gate' = HIGHLIGHTED (amarillo) con badge 'acción humana' | "
+        "Todas las tarjetas de escena muestran preview.mp4 con botones Aprobar/Revisar | "
+        "Tab de la escena se activa para que el usuario pueda revisar cada una",
+        "F5 → status=awaiting_scene_review → UI muestra tarjetas de escena con reproductor inline | "
+        "Nodos Coder/Visual QA = DONE (verde), Scene Review Gate = esperando usuario")
 
 
 def _on_cancelled(project_id: str, emit: Emit, msg: str) -> None:
@@ -363,9 +433,16 @@ def _run_scene_initial(
             agent=agent, scene=scene_num, **entry)
     set_stream_emit(_stream_line)
 
+    debug_log.stage(project_id, f"scene_{scene_num:02d}",
+                    f"desc={scene_desc[:80]!r}")
     update_scene_state(project_id, scene_num, status="rendering")
     _ws(emit, project_id, "scene_started", scene=scene_num, description=scene_desc[:200])
+    debug_log.ui_state(project_id,
+        f"Tarjeta Escena {scene_num} = RENDERING (spinner azul) | "
+        f"Nodo 'Coder' (escena {scene_num}) = RUNNING | "
+        "Múltiples escenas pueden estar en este estado simultáneamente (hasta 4 workers en paralelo)")
 
+    debug_log.stage(project_id, f"scene_{scene_num:02d} → coder")
     _ws(emit, project_id, "agent_started", agent="coder", scene=scene_num)
     scene_file, code_status = coder.run(
         project_id, scene_num, scene_desc, outline, proj,
@@ -376,46 +453,89 @@ def _run_scene_initial(
     )
 
     if code_status == "failed":
+        debug_log.error(project_id,
+            f"Coder FAILED for scene {scene_num} after all fix cycles")
         _ws(emit, project_id, "render_failed", scene=scene_num, message="Max fix cycles reached")
         update_scene_state(project_id, scene_num, status="failed",
                            preview_path=None)
         _ws(emit, project_id, "scene_preview_ready", scene=scene_num, status="failed")
+        debug_log.ui_state(project_id,
+            f"Tarjeta Escena {scene_num} = ERROR (rojo) | Mensaje de error visible | "
+            "Resto de escenas continúan en paralelo sin interrumpirse",
+            f"F5 → scene_{scene_num:02d}.status=failed → Tarjeta muestra badge ERROR con mensaje")
         return
 
+    debug_log.info(project_id, f"Scene {scene_num} code generated: {scene_file}")
     _ws(emit, project_id, "render_ok", scene=scene_num)
-    preview_mp4, _ = _render_preview(scene_file, scene_num, proj)
+    debug_log.ui_state(project_id,
+        f"Escena {scene_num}: código generado, render -ql en curso | "
+        "Tarjeta = spinner 'Renderizando...'")
+    preview_mp4, duration = _render_preview(scene_file, scene_num, proj, project_id)
+    debug_log.info(project_id, f"Preview rendered: {preview_mp4}  duration={duration:.1f}s")
     frames = _extract_frames(preview_mp4, scene_num, proj)
+    debug_log.info(project_id, f"Frames extracted: {len(frames)} PNG(s)")
     _ws(emit, project_id, "frames_extracted", scene=scene_num, count=len(frames))
 
     # Auto-QA pass
     for cycle in range(1, MAX_QA_CYCLES + 1):
+        debug_log.stage(project_id, f"scene_{scene_num:02d} → visual_qa", f"cycle={cycle}")
         _ws(emit, project_id, "agent_started", agent="visual_qa",
             scene=scene_num, cycle=cycle)
         qa = visual_qa.run(project_id, scene_num, scene_desc, scene_file, frames, proj)
         if qa["status"] == "ok":
+            debug_log.info(project_id, f"Visual QA PASSED  scene={scene_num}  cycle={cycle}")
             _ws(emit, project_id, "qa_ok", scene=scene_num)
+            debug_log.ui_state(project_id,
+                f"Escena {scene_num}: Visual QA = PASSED ✓ | "
+                "Nodo 'Visual QA' = DONE (verde) | Tarjeta avanza a awaiting_review")
             break
+        debug_log.warning(project_id,
+            f"Visual QA issue  scene={scene_num}  cycle={cycle}  notes={qa['raw'][:300]}")
         _ws(emit, project_id, "qa_issue", scene=scene_num,
             cycle=cycle, notes=qa["raw"][:500])
+        debug_log.ui_state(project_id,
+            f"Escena {scene_num}: Visual QA detectó problemas (ciclo {cycle}/{MAX_QA_CYCLES}) | "
+            "Nodo QA = WARNING (naranja) | Panel lateral muestra las notas de QA | "
+            "Pipeline aplica auto-fix vía Coder.fix_with_feedback y re-renderiza")
         if cycle == MAX_QA_CYCLES:
+            debug_log.warning(project_id,
+                f"Visual QA DEGRADED  scene={scene_num}  max cycles reached")
             _ws(emit, project_id, "qa_degraded", scene=scene_num)
+            debug_log.ui_state(project_id,
+                f"Escena {scene_num}: Visual QA DEGRADED — ciclos agotados | "
+                "Nodo QA = DEGRADED (naranja oscuro) | Tarjeta avanza igual a awaiting_review con badge de advertencia")
             break
+        debug_log.stage(project_id, f"scene_{scene_num:02d} → coder.fix", f"cycle={cycle}")
         _ws(emit, project_id, "agent_started", agent="coder",
             scene=scene_num, phase="qa_fix")
         coder.fix_with_feedback(project_id, scene_file, qa["raw"], scene_num)
-        preview_mp4, _ = _render_preview(scene_file, scene_num, proj)
+        preview_mp4, duration = _render_preview(scene_file, scene_num, proj, project_id)
+        debug_log.info(project_id,
+            f"Re-rendered after QA fix  scene={scene_num}  duration={duration:.1f}s")
         frames = _extract_frames(preview_mp4, scene_num, proj)
 
     update_scene_state(project_id, scene_num, status="awaiting_review",
                        preview_path=str(preview_mp4))
+    debug_log.info(project_id,
+        f"Scene {scene_num} COMPLETE → awaiting_review  preview={preview_mp4}")
     _ws(emit, project_id, "scene_preview_ready", scene=scene_num,
         status="awaiting_review", preview_path=str(preview_mp4))
+    debug_log.ui_state(project_id,
+        f"Tarjeta Escena {scene_num} = AWAITING REVIEW (amarillo) | "
+        "Reproductor de vídeo inline activo con preview.mp4 | "
+        "Botones 'Aprobar escena' y 'Solicitar revisión' visibles | "
+        "Resto de escenas paralelas pueden seguir en distintos estados",
+        f"F5 → scene_{scene_num:02d}.status=awaiting_review → Tarjeta muestra preview + botones de acción")
 
 
 # ── User revision: re-roll one scene ────────────────────────────────────────
 
 def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emit) -> None:
     """Apply user feedback to a single scene, re-render, re-QA."""
+    debug_log.ensure_run(project_id)
+    debug_log.stage(project_id, f"scene_{scene_num:02d}_revision",
+                    f"feedback={feedback[:80]!r}")
+
     def _stream_line(agent: str, scene: int | None, entry: dict) -> None:
         _ws(emit, project_id, "agent_stream_line",
             agent=agent, scene=scene_num, **entry)
@@ -442,6 +562,11 @@ def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emi
     update_scene_state(project_id, scene_num, status="revising",
                        feedback_history=history)
     _ws(emit, project_id, "scene_revising", scene=scene_num)
+    debug_log.ui_state(project_id,
+        f"Tarjeta Escena {scene_num} = REVISING (azul/spinner) | "
+        "Feedback del usuario registrado | Coder revisando la escena con el feedback",
+        f"F5 → scene_{scene_num:02d}.status=revising → Tarjeta muestra spinner 'Revisando...' | "
+        "Resto de escenas no se ven afectadas")
 
     try:
         _ws(emit, project_id, "agent_started", agent="coder", scene=scene_num,
@@ -464,25 +589,33 @@ def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emi
                 status="awaiting_review", message="Revision rendered with errors")
             return
 
-        preview_mp4, _ = _render_preview(scene_file, scene_num, proj)
+        preview_mp4, duration = _render_preview(scene_file, scene_num, proj, project_id)
+        debug_log.info(project_id,
+            f"Re-rendered after user revision  scene={scene_num}  duration={duration:.1f}s")
         frames = _extract_frames(preview_mp4, scene_num, proj)
         _ws(emit, project_id, "frames_extracted", scene=scene_num, count=len(frames))
 
         # Re-run QA
         for cycle in range(1, MAX_QA_CYCLES + 1):
+            debug_log.stage(project_id, f"scene_{scene_num:02d}_revision → visual_qa",
+                            f"cycle={cycle}")
             _ws(emit, project_id, "agent_started", agent="visual_qa",
                 scene=scene_num, cycle=cycle)
             qa = visual_qa.run(project_id, scene_num, scene_desc, scene_file, frames, proj)
             if qa["status"] == "ok":
+                debug_log.info(project_id,
+                    f"Visual QA PASSED after revision  scene={scene_num}  cycle={cycle}")
                 _ws(emit, project_id, "qa_ok", scene=scene_num)
                 break
+            debug_log.warning(project_id,
+                f"QA issue after revision  scene={scene_num}  cycle={cycle}  {qa['raw'][:200]}")
             _ws(emit, project_id, "qa_issue", scene=scene_num,
                 cycle=cycle, notes=qa["raw"][:500])
             if cycle == MAX_QA_CYCLES:
                 _ws(emit, project_id, "qa_degraded", scene=scene_num)
                 break
             coder.fix_with_feedback(project_id, scene_file, qa["raw"], scene_num)
-            preview_mp4, _ = _render_preview(scene_file, scene_num, proj)
+            preview_mp4, _ = _render_preview(scene_file, scene_num, proj, project_id)
             frames = _extract_frames(preview_mp4, scene_num, proj)
 
         update_scene_state(project_id, scene_num, status="awaiting_review",
@@ -491,9 +624,11 @@ def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emi
             status="awaiting_review", preview_path=str(preview_mp4))
 
     except PipelineCancelled as e:
+        debug_log.warning(project_id, f"Scene {scene_num} revision cancelled: {e}")
         update_scene_state(project_id, scene_num, status="awaiting_review")
         _on_cancelled(project_id, emit, str(e))
     except Exception as e:
+        debug_log.error(project_id, f"Scene {scene_num} revision failed: {e}", e)
         update_scene_state(project_id, scene_num, status="awaiting_review")
         _ws(emit, project_id, "error", message=f"Scene {scene_num} revision failed: {e}")
 
@@ -502,6 +637,8 @@ def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emi
 
 def run_finalize(project_id: str, emit: Emit) -> None:
     """Render final video from all approved scenes, then pause for curator."""
+    debug_log.ensure_run(project_id)
+    debug_log.stage(project_id, "editor_finalize")
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
     lang = manifest.get("lang", "es")
@@ -514,6 +651,11 @@ def run_finalize(project_id: str, emit: Emit) -> None:
         append_event(project_id, AgentEvent(kind="pipeline.resumed",
                                             payload={"after": "scene_review"}))
         _ws(emit, project_id, "finalizing")
+        debug_log.ui_state(project_id,
+            "Nodo 'Editor' = RUNNING (azul/animado) | "
+            "Scene Review Gate = DONE (verde) | Todas las escenas aprobadas | "
+            "UI muestra 'Generando video final...' | Tab Ejecución activo",
+            "F5 → status=scenes_approved → UI muestra Editor como running, nodos anteriores como done")
 
         # Collect scene files in order
         scene_files: list[Path] = []
@@ -523,26 +665,40 @@ def run_finalize(project_id: str, emit: Emit) -> None:
             if sf.exists():
                 scene_files.append(sf)
 
+        debug_log.info(project_id,
+            f"Editor: {len(scene_files)} scene file(s) → HQ render + concat")
         _ws(emit, project_id, "agent_started", agent="editor")
-        final_video = editor.run(scene_files, proj, lang=lang)
+        final_video = editor.run(scene_files, proj, lang=lang, project_id=project_id)
 
         emit_grade(project_id, "editor", None, grade_video_exists(final_video))
         emit_grade(project_id, "editor", None, grade_video_playable(final_video))
+        debug_log.info(project_id, f"Final video ready: {final_video}")
         _ws(emit, project_id, "edit_done", video=str(final_video))
         update_manifest(project_id, {"status": "awaiting_review",
                                      "final_video": str(final_video)})
         append_event(project_id, AgentEvent(kind="pipeline.paused",
                                             payload={"reason": "awaiting_review"}))
+        debug_log.ui_state(project_id,
+            "Nodo 'Editor' = DONE (verde) | "
+            "Tab 'Revisar' aparece en la navegación con indicador de notificación | "
+            "Reproductor de vídeo final visible con botón 'Exportar a Drive' | "
+            "Formulario de aprobación con campo de feedback | Botón 'Aprobar y generar aprendizajes'",
+            "F5 → status=awaiting_review → UI redirige a /project/{id}/review | "
+            "Video final reproducible, formulario de feedback disponible")
 
     except PipelineCancelled as e:
+        debug_log.warning(project_id, f"Finalize cancelled: {e}")
         _on_cancelled(project_id, emit, str(e))
     except Exception as e:
+        debug_log.error(project_id, f"Finalize failed: {e}", e)
         _handle_pipeline_exception(project_id, emit, e, "finalize")
 
 
 # ── Curator ──────────────────────────────────────────────────────────────────
 
 def run_curator(project_id: str, emit: Emit) -> None:
+    debug_log.ensure_run(project_id)
+    debug_log.stage(project_id, "curator")
     proj = project_path(project_id)
 
     def _stream_line(agent: str, scene: int | None, entry: dict) -> None:
@@ -553,15 +709,31 @@ def run_curator(project_id: str, emit: Emit) -> None:
         append_event(project_id, AgentEvent(kind="pipeline.resumed",
                                             payload={"after": "review"}))
         _ws(emit, project_id, "agent_started", agent="curator")
+        debug_log.ui_state(project_id,
+            "Nodo 'Curator' = RUNNING (azul/animado) | "
+            "UI muestra 'Generando aprendizajes...' | Panel lateral con progreso del Curator")
         result = curator.run(project_id, proj)
+        debug_log.info(project_id,
+            f"Curator done — learnings={len(result.get('learnings',''))} chars  "
+            f"patches={list(result.get('patches',{}).keys())}")
         _ws(emit, project_id, "curator_done",
             learnings=result.get("learnings", "")[:300],
             patches=list(result.get("patches", {}).keys()))
         update_manifest(project_id, {"status": "curated"})
+        debug_log.ui_state(project_id,
+            "Nodo 'Curator' = DONE (verde) — PIPELINE COMPLETO ✓ | "
+            "Tab 'Aprendizajes' activo con diff viewer por hunks | "
+            "Cada hunk tiene botón Aceptar/Rechazar para actualizar la skill | "
+            "Todos los nodos del pipeline = DONE (verde)",
+            "F5 → status=curated → UI muestra tab Aprendizajes con el diff viewer | "
+            "Pipeline completo, todos los nodos verdes")
+        debug_log.pipeline_end(project_id, "curated", 0)
         append_event(project_id, AgentEvent(kind="pipeline.completed", payload={}))
     except PipelineCancelled as e:
+        debug_log.warning(project_id, f"Curator cancelled: {e}")
         _on_cancelled(project_id, emit, str(e))
     except Exception as e:
+        debug_log.error(project_id, f"Curator failed: {e}", e)
         _handle_pipeline_exception(project_id, emit, e, "curator")
 
 
@@ -714,14 +886,20 @@ def _parse_scenes(outline: str) -> list[str]:
     return chunks or [outline.strip()]
 
 
-def _render_preview(scene_file: Path, scene_num: int, proj: Path) -> tuple[Path, float]:
+def _render_preview(
+    scene_file: Path, scene_num: int, proj: Path, project_id: str = ""
+) -> tuple[Path, float]:
     scene_name = _get_scene_name(scene_file)
     render_dir = proj / "renders" / f"scene_{scene_num:02d}"
     render_dir.mkdir(parents=True, exist_ok=True)
     out = render_dir / "preview.mp4"
-    subprocess.run(
-        ["manim", "-ql", "--output_file", str(out), str(scene_file), scene_name],
-        capture_output=True, text=True,
+    cmd = ["manim", "-ql", "--output_file", str(out), str(scene_file), scene_name]
+    debug_log.info(project_id, f"Render preview  scene={scene_num}  →  {out.name}")
+    t0 = time.perf_counter()
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    debug_log.subprocess_result(
+        project_id, f"manim -ql scene {scene_num}", cmd, result,
+        time.perf_counter() - t0,
     )
     return out, _probe_duration(out)
 
