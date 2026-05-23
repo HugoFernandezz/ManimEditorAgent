@@ -74,8 +74,9 @@ Keep total duration within the target length (±20%).""",
 
 Video idea: $idea
 Language: $lang
-Audience: $audience
 Target length: $target_length
+
+$format_context
 
 --- SKILL: SKILL.md ---
 $skill_md
@@ -123,6 +124,8 @@ OUTPUT RULES:
     user_template="""$plugin_context
 
 LANGUAGE: $lang
+
+$format_context
 
 FULL OUTLINE (context):
 $outline
@@ -333,8 +336,9 @@ RULES:
     GOOD: "Write the MathTex 'f(x)=x^2' centered above the curve"
   - The combined beats of a scene must form a coherent paragraph if read aloud.""",
     user_template="""LANGUAGE: $lang
-AUDIENCE: $audience
 TARGET TOTAL LENGTH: $target_length
+
+$format_context
 
 OUTLINE (from Planner):
 $outline

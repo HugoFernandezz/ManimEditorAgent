@@ -40,7 +40,7 @@ def create_project(name: str, description: str = "") -> dict[str, Any]:
         # Video fields — populated when the user starts a video
         "idea": None,
         "lang": "es",
-        "audience": "general",
+        "format": "youtube",
         "target_length": "60s",
         "voice_profile": None,
         "export_langs": [],

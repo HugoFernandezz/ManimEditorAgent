@@ -22,6 +22,7 @@ from pathlib import Path
 from harness.runner import call_agent
 from harness.prompts import BEAT_WRITER
 from harness.guardrails import extract_json_array
+from tools.format_context import get_planning_context
 
 SKILL_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills" / "manim"
 
@@ -55,7 +56,7 @@ def _validator(raw: str) -> tuple[bool, str]:
 
 def run(
     project_id: str, outline: str, project_path: Path,
-    lang: str = "es", audience: str = "general", target_length: str = "60s",
+    lang: str = "es", fmt: str = "youtube", target_length: str = "60s",
 ) -> dict[int, Path]:
     """Generate beats.json for every scene in the outline.
 
@@ -76,7 +77,8 @@ def run(
         project_id=project_id, agent="beat_writer",
         prompt=BEAT_WRITER.render(
             outline=outline, lang=lang,
-            audience=audience, target_length=target_length,
+            format_context=get_planning_context(fmt),
+            target_length=target_length,
             voiceover_template=voiceover_template,
         ),
         system=BEAT_WRITER.system,

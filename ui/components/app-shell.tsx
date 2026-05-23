@@ -1,9 +1,9 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { fetchProjects, type Project } from "@/lib/api";
+import { fetchProjects, deleteProject, type Project } from "@/lib/api";
 import { NewProjectModal } from "@/components/new-project-modal";
-import { Plus, ChevronLeft, ChevronRight, Video } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Video, Trash2 } from "lucide-react";
 
 const STATUS_DOT: Record<string, string> = {
   draft:            "bg-zinc-500",
@@ -24,6 +24,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [showNew, setShowNew] = useState(false);
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const activeSlug = pathname.startsWith("/project/") ? pathname.split("/")[2] : null;
+
   const loadProjects = useCallback(() => fetchProjects().then(setProjects), []);
 
   useEffect(() => {
@@ -32,7 +36,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => clearInterval(interval);
   }, [loadProjects]);
 
-  const activeSlug = pathname.startsWith("/project/") ? pathname.split("/")[2] : null;
+  const handleDelete = useCallback(async (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation();
+    if (!window.confirm("¿Eliminar este proyecto y todos sus archivos? Esta acción no se puede deshacer.")) return;
+    setDeletingId(projectId);
+    try {
+      await deleteProject(projectId);
+      await loadProjects();
+      if (activeSlug === projectId) router.push("/");
+    } finally {
+      setDeletingId(null);
+    }
+  }, [activeSlug, loadProjects, router]);
   const activeProject = useMemo(
     () => (activeSlug ? projects.find((p) => p.id === activeSlug) ?? null : null),
     [activeSlug, projects],
@@ -87,25 +102,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {projects.map((p) => {
             const isActive = p.id === activeSlug;
             return (
-              <button
-                key={p.id}
-                onClick={() => router.push(`/project/${p.id}`)}
-                title={p.idea ?? p.name}
-                className={`flex items-center gap-2.5 w-full rounded-lg px-2 py-2 text-left transition-colors ${
-                  isActive
-                    ? "bg-zinc-800 text-zinc-100"
-                    : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
-                } ${collapsed ? "justify-center" : ""}`}
-              >
-                <div
-                  className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                    STATUS_DOT[p.status] ?? "bg-zinc-600"
-                  }`}
-                />
+              <div key={p.id} className="group relative">
+                <button
+                  onClick={() => router.push(`/project/${p.id}`)}
+                  title={p.idea ?? p.name}
+                  className={`flex items-center gap-2.5 w-full rounded-lg px-2 py-2 text-left transition-colors ${
+                    isActive
+                      ? "bg-zinc-800 text-zinc-100"
+                      : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                  } ${collapsed ? "justify-center" : "pr-7"}`}
+                >
+                  <div
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      STATUS_DOT[p.status] ?? "bg-zinc-600"
+                    }`}
+                  />
+                  {!collapsed && (
+                    <span className="text-xs truncate flex-1">{p.name || (p.idea ?? p.id)}</span>
+                  )}
+                </button>
                 {!collapsed && (
-                  <span className="text-xs truncate flex-1">{p.name || (p.idea ?? p.id)}</span>
+                  <button
+                    onClick={(e) => handleDelete(e, p.id)}
+                    disabled={deletingId === p.id}
+                    title="Eliminar proyecto"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-red-400 disabled:opacity-50 transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 )}
-              </button>
+              </div>
             );
           })}
         </nav>

@@ -9,7 +9,7 @@ export interface Project {
   // Video fields (null until video is started)
   idea?: string | null;
   lang: string;
-  audience: string;
+  format: string;
   target_length: string;
   voice_profile?: string | null;
   export_langs: string[];
@@ -54,7 +54,7 @@ export async function startVideo(
   data: {
     idea: string;
     lang: string;
-    audience: string;
+    format: string;
     target_length: string;
     voice_profile?: string;
     export_langs?: string[];
@@ -220,6 +220,11 @@ export async function fetchResumeOptions(id: string): Promise<ResumeOptions> {
   const res = await fetch(`${BASE}/projects/${id}/resume-options`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/projects/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 export async function resumePipeline(id: string, fromStep: ResumeStep): Promise<void> {

@@ -10,6 +10,7 @@ from pathlib import Path
 from harness.runner import call_agent
 from harness.prompts import PLANNER
 from harness.graders import grade_outline_structure, grade_outline_quality_llm, emit_grade
+from tools.format_context import get_planning_context
 
 SKILL_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills" / "manim"
 
@@ -38,7 +39,7 @@ def _maybe_3b1b_style(idea: str) -> str:
 
 def run(
     project_id: str, idea: str, project_path: Path,
-    lang: str = "es", audience: str = "general", target_length: str = "60s",
+    lang: str = "es", fmt: str = "youtube", target_length: str = "60s",
     plugin_context: str = "",
 ) -> str:
     skill_md = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -48,7 +49,9 @@ def run(
         project_id=project_id, agent="planner",
         prompt=PLANNER.render(
             plugin_context=plugin_context,
-            idea=idea, lang=lang, audience=audience, target_length=target_length,
+            idea=idea, lang=lang,
+            format_context=get_planning_context(fmt),
+            target_length=target_length,
             skill_md=skill_md, style_section=style_section,
         ),
         system=PLANNER.system,

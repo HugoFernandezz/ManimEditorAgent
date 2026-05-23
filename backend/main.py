@@ -82,7 +82,7 @@ class CreateProjectRequest(BaseModel):
 class StartVideoRequest(BaseModel):
     idea: str
     lang: str = "es"
-    audience: str = "general"
+    format: str = "youtube"
     target_length: str = "60s"
     voice_profile: str | None = None
     export_langs: list[str] = []
@@ -181,6 +181,23 @@ async def create_new_project(req: CreateProjectRequest) -> dict:
 @app.get("/projects/{project_id}")
 async def get_project(project_id: str) -> dict:
     return _manifest_or_404(project_id)
+
+
+@app.delete("/projects/{project_id}")
+async def delete_project(project_id: str) -> dict:
+    import shutil
+    _manifest_or_404(project_id)
+    request_cancel(project_id)
+    existing = _pipeline_tasks.pop(project_id, None)
+    if existing and not existing.done():
+        existing.cancel()
+    for ws in list(_ws_clients.pop(project_id, [])):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    shutil.rmtree(project_path(project_id), ignore_errors=True)
+    return {"ok": True}
 
 
 _RESTARTABLE = frozenset({

@@ -24,7 +24,7 @@ class EvalTask:
     id: str
     idea: str
     lang: str = "es"
-    audience: str = "general"
+    fmt: str = "youtube"
     target_length: str = "30s"
     min_outline_score: float = 0.7
     expected_min_scenes: int = 3
@@ -46,25 +46,25 @@ SUITE: list[EvalTask] = [
     EvalTask(
         id="derivative_intuition",
         idea="Explica intuitivamente qué es la derivada en un punto, mostrando la pendiente de la recta tangente",
-        lang="es", audience="high school", target_length="30s",
+        lang="es", fmt="youtube", target_length="30s",
         notes="Easy task — should be near-100% pass for healthy system",
     ),
     EvalTask(
         id="fourier_intro",
         idea="Visualiza cómo una serie de Fourier suma ondas senoidales para aproximar una onda cuadrada",
-        lang="es", audience="undergrad", target_length="60s",
+        lang="es", fmt="youtube", target_length="60s",
         notes="Medium — requires accurate math + animated parametric plots",
     ),
     EvalTask(
         id="pythagoras_visual",
         idea="Demuestra visualmente el teorema de Pitágoras con cuadrados sobre los lados",
-        lang="es", audience="general", target_length="30s",
+        lang="es", fmt="youtube", target_length="30s",
         notes="Easy — should pass consistently",
     ),
     EvalTask(
         id="eigenvector_3d",
         idea="Muestra qué es un eigenvector de una transformación lineal en 3D, con un cubo rotando y un eje invariante",
-        lang="es", audience="advanced", target_length="60s",
+        lang="es", fmt="tiktok", target_length="60s",
         notes="Hard — 3D scene + abstract concept",
     ),
 ]
@@ -77,6 +77,7 @@ def run_suite(repeats: int = 1, only: str | None = None) -> Path:
     # evals, call run_full_pipeline_eval() with a small sample.
     from harness.prompts import PLANNER
     from harness.runner import call_agent, AgentCallFailed
+    from tools.format_context import get_planning_context
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     run_dir = EVAL_ROOT / "runs" / ts
@@ -104,7 +105,8 @@ def run_suite(repeats: int = 1, only: str | None = None) -> Path:
                     prompt=PLANNER.render(
                         plugin_context="", skill_md=skill_md, style_section="",
                         idea=task.idea, lang=task.lang,
-                        audience=task.audience, target_length=task.target_length,
+                        format_context=get_planning_context(task.fmt),
+                        target_length=task.target_length,
                     ),
                     system=PLANNER.system, model="sonnet",
                     tools=None,

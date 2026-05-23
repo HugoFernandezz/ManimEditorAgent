@@ -20,6 +20,7 @@ from harness.prompts import CODER_GENERATE, CODER_FIX, CODER_REVISE
 from harness.guardrails import voiceover_scene_well_formed
 from harness.graders import grade_scene_renderable, emit_grade
 from tools.scene_utils import get_scene_name
+from tools.format_context import get_coding_context
 
 SKILL_ROOT = Path(__file__).parent.parent.parent / ".agents" / "skills" / "manim"
 MAX_FIX_CYCLES = 2
@@ -97,7 +98,7 @@ def run(
     project_id: str, scene_number: int, scene_desc: str,
     outline: str, project_path: Path, scene_name: str | None = None,
     plugin_context: str = "", lang: str = "es",
-    beats_file: Path | None = None,
+    beats_file: Path | None = None, fmt: str = "youtube",
 ) -> tuple[Path, str]:
     if scene_name is None:
         scene_name = f"Scene{scene_number:02d}"
@@ -114,6 +115,7 @@ def run(
             lang=lang, outline=outline, scene_desc=scene_desc,
             scene_name=scene_name, beats_json=beats_json,
             style_section=style_section,
+            format_context=get_coding_context(fmt),
             **skill,
         ),
         system=CODER_GENERATE.render_system(scene_name=scene_name, lang=lang),
@@ -152,7 +154,7 @@ def revise(
     project_id: str, scene_number: int, scene_file: Path,
     feedback: str, project_path: Path,
     lang: str = "es", plugin_context: str = "",
-    beats_file: Path | None = None,
+    beats_file: Path | None = None, fmt: str = "youtube",
 ) -> tuple[Path, str]:
     """User-driven revision: apply free-text feedback, keep beats intact."""
     scene_name = get_scene_name(scene_file)

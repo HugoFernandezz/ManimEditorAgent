@@ -253,7 +253,7 @@ def _stage2_planner_through_scenes(
         outline = planner.run(
             project_id, manifest["idea"], proj,
             lang=lang,
-            audience=manifest.get("audience", "general"),
+            fmt=manifest.get("format", "youtube"),
             target_length=manifest.get("target_length", "60s"),
             plugin_context=plugin_context,
         )
@@ -270,7 +270,7 @@ def _stage2_planner_through_scenes(
         beats_by_scene = beat_writer.run(
             project_id, outline, proj,
             lang=lang,
-            audience=manifest.get("audience", "general"),
+            fmt=manifest.get("format", "youtube"),
             target_length=manifest.get("target_length", "60s"),
         )
     else:
@@ -289,7 +289,8 @@ def _stage2_planner_through_scenes(
 
     _run_scenes_parallel(
         project_id, scene_entries, beats_by_scene,
-        outline, proj, plugin_context, lang, emit,
+        outline, proj, plugin_context, lang,
+        manifest.get("format", "youtube"), emit,
     )
 
     # After all scenes rendered, pause for per-scene human review
@@ -318,6 +319,7 @@ def _run_scenes_parallel(
     proj: Path,
     plugin_context: str,
     lang: str,
+    fmt: str,
     emit: Emit,
 ) -> None:
     """Fan-out scene rendering across threads, collect results."""
@@ -328,7 +330,7 @@ def _run_scenes_parallel(
             pool.submit(
                 _run_scene_initial,
                 project_id, i, desc, outline, proj,
-                plugin_context, lang, beats_by_scene.get(i), emit,
+                plugin_context, lang, fmt, beats_by_scene.get(i), emit,
             ): i
             for i, desc in enumerate(scene_entries, start=1)
         }
@@ -350,6 +352,7 @@ def _run_scene_initial(
     proj: Path,
     plugin_context: str,
     lang: str,
+    fmt: str,
     beats_file: Path | None,
     emit: Emit,
 ) -> None:
@@ -369,6 +372,7 @@ def _run_scene_initial(
         plugin_context=plugin_context,
         lang=lang,
         beats_file=beats_file,
+        fmt=fmt,
     )
 
     if code_status == "failed":
@@ -420,6 +424,7 @@ def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emi
     proj = project_path(project_id)
     manifest = load_manifest(project_id)
     lang = manifest.get("lang", "es")
+    fmt = manifest.get("format", "youtube")
     plugin_context = build_plugin_context(manifest)
 
     scene_file = proj / "scenes" / f"scene_{scene_num:02d}.py"
@@ -450,6 +455,7 @@ def run_scene_revision(project_id: str, scene_num: int, feedback: str, emit: Emi
             lang=lang,
             plugin_context=plugin_context,
             beats_file=beats_file if beats_file.exists() else None,
+            fmt=fmt,
         )
 
         if code_status == "failed":

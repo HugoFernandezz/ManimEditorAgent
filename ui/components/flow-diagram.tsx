@@ -156,7 +156,7 @@ export function FlowDiagram({ project }: Props) {
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
             <span><span className="text-zinc-600">idea:</span> {project.idea}</span>
             <span><span className="text-zinc-600">lang:</span> {project.lang.toUpperCase()}</span>
-            <span><span className="text-zinc-600">audiencia:</span> {project.audience}</span>
+            <span><span className="text-zinc-600">formato:</span> {project.format}</span>
             <span><span className="text-zinc-600">duración:</span> {project.target_length}</span>
           </div>
         )}

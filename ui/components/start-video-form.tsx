@@ -7,14 +7,18 @@ import {
 import { Loader2, Play, FastForward, ChevronDown, ChevronRight, SkipForward, FileText, Layers, Film } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const AUDIENCES = ["general", "high school", "undergrad", "advanced"];
-const LENGTHS   = ["30s", "60s", "2min", "5min+"];
-const LANGS     = [{ code: "es", label: "Español" }, { code: "en", label: "English" }];
+const LENGTHS = ["30s", "60s", "2min", "5min+"];
+const LANGS   = [{ code: "es", label: "Español" }, { code: "en", label: "English" }];
+const FORMATS = [
+  { id: "youtube", label: "YouTube", desc: "16:9 · narrativo",               subDesc: "Ritmo profundo, análisis detallado" },
+  { id: "tiktok",  label: "TikTok",  desc: "9:16 · retención hiperactiva",   subDesc: "Gancho en 2 s, jump cuts, safe zones" },
+] as const;
+type VideoFormat = (typeof FORMATS)[number]["id"];
 
 interface Defaults {
   idea?: string | null;
   lang?: string;
-  audience?: string;
+  format?: string;
   target_length?: string;
   voice_profile?: string | null;
 }
@@ -28,7 +32,7 @@ interface Props {
 export function StartVideoForm({ projectId, onStarted, defaults }: Props) {
   const [idea, setIdea]               = useState(defaults?.idea ?? "");
   const [lang, setLang]               = useState(defaults?.lang ?? "es");
-  const [audience, setAudience]       = useState(defaults?.audience ?? "general");
+  const [fmt, setFmt]                 = useState<VideoFormat>((defaults?.format as VideoFormat) ?? "youtube");
   const [targetLength, setTargetLength] = useState(defaults?.target_length ?? "60s");
   const [voiceProfile, setVoiceProfile] = useState(defaults?.voice_profile ?? "");
   const [skipResearch, setSkipResearch] = useState(false);
@@ -68,7 +72,7 @@ export function StartVideoForm({ projectId, onStarted, defaults }: Props) {
       await startVideo(projectId, {
         idea: idea.trim(),
         lang,
-        audience,
+        format: fmt,
         target_length: targetLength,
         voice_profile: voiceProfile || undefined,
         skip_research: skipResearch,
@@ -131,18 +135,20 @@ export function StartVideoForm({ projectId, onStarted, defaults }: Props) {
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">Audiencia</label>
-            <div className="flex flex-wrap gap-2">
-              {AUDIENCES.map((a) => (
+            <label className="text-xs font-medium text-zinc-400 uppercase tracking-wide">Formato</label>
+            <div className="grid grid-cols-2 gap-2">
+              {FORMATS.map(({ id, label, desc, subDesc }) => (
                 <button
-                  key={a} type="button" onClick={() => setAudience(a)}
-                  className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
-                    audience === a
-                      ? "bg-blue-600 border-blue-600 text-white"
+                  key={id} type="button" onClick={() => setFmt(id)}
+                  className={`flex flex-col items-start gap-0.5 px-4 py-3 rounded-xl border text-left transition-colors ${
+                    fmt === id
+                      ? "bg-blue-600/20 border-blue-500 text-white"
                       : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
                   }`}
                 >
-                  {a}
+                  <span className="text-sm font-semibold">{label}</span>
+                  <span className={`text-[10px] font-medium ${fmt === id ? "text-blue-300" : "text-zinc-400"}`}>{desc}</span>
+                  <span className={`text-[10px] leading-tight mt-0.5 ${fmt === id ? "text-blue-200/80" : "text-zinc-500"}`}>{subDesc}</span>
                 </button>
               ))}
             </div>
