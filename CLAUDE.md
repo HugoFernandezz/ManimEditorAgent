@@ -54,7 +54,8 @@ proyectoManim/
 │   │   ├── guardrails.py            ← validadores estructurales
 │   │   ├── graders.py               ← code-based + LLM-as-judge
 │   │   ├── telemetry.py             ← métricas OTel gen-ai
-│   │   └── evals.py                 ← suite offline pass@k
+│   │   ├── evals.py                 ← suite offline pass@k
+│   │   └── debug_log.py             ← logger de debug por proyecto (ver sección Debug Logging)
 │   ├── agents/
 │   │   ├── researcher.py
 │   │   ├── planner.py
@@ -69,9 +70,11 @@ proyectoManim/
 │       ├── plugin_installer.py      ← pip install + verificación import
 │       ├── plugin_context.py        ← construye el contexto de plugins inyectado en prompts
 │       ├── scene_utils.py           ← helpers comunes (e.g. get_scene_name)
+│       ├── format_context.py        ← contexto de formato (YouTube vs TikTok) para agentes
 │       └── skill_diff.py            ← genera/aplica diffs a archivos de skill
 │
 ├── ui/                              ← Next.js App Router
+│   ├── .env.local                   ← NEXT_PUBLIC_GOOGLE_CLIENT_ID (gitignoreado, ver Drive export)
 │   ├── app/
 │   │   ├── layout.tsx               ← monta AppShell (sidebar + header)
 │   │   ├── page.tsx                 ← home: "selecciona un proyecto"
@@ -87,12 +90,14 @@ proyectoManim/
 │   │   ├── start-video-form.tsx     ← formulario de configuración del video (dentro del proyecto)
 │   │   ├── pipeline-view.tsx        ← nodos animados en tiempo real (tab Ejecución)
 │   │   ├── flow-diagram.tsx         ← diagrama vertical estático (tab Vista del flujo)
-│   │   └── skill-editor.tsx         ← modal editor de archivos de skill
+│   │   ├── skill-editor.tsx         ← modal editor de archivos de skill
+│   │   └── export-to-drive-button.tsx ← botón exportar video final a Google Drive
 │   └── lib/api.ts                   ← cliente REST + WebSocket hook
 │
 └── projects/<slug>/                 ← generado en runtime, en .gitignore parcial
     ├── manifest.json                ← estado del proyecto/video (incluye `scenes` dict)
     ├── events.jsonl                 ← event-sourced trace (harness)
+    ├── logs/pipeline_YYYYMMDDTHHMMSS.log  ← log de debug por ejecución (ver Debug Logging)
     ├── plugins_proposal.json
     ├── outline.md
     ├── beats/scene_NN.beats.json    ← Beat Writer: 2-5 beats/escena para sync voz↔anim
@@ -108,10 +113,10 @@ proyectoManim/
 ## Flujo de usuario
 
 1. **Crear proyecto** — sidebar → "Nuevo proyecto" → modal pide `nombre` + `descripción` → proyecto en estado `draft`
-2. **Configurar video** — dentro del proyecto, tab "Vista del flujo" → formulario con idea, idioma, audiencia, duración, voz → `POST /projects/{id}/start-video`
+2. **Configurar video** — dentro del proyecto, tab "Vista del flujo" → formulario con idea, idioma, **formato (YouTube/TikTok)**, duración, voz → `POST /projects/{id}/start-video`
 3. **Pipeline corre** — tab "Ejecución" muestra nodos animados en tiempo real vía WebSocket
 4. **Plugins** — el Researcher propone plugins → UI los muestra con checkboxes → usuario aprueba → se instalan con pip
-5. **Revisar video** — cuando status = `awaiting_review` → tab → reproductor + formulario de feedback → botón Aprobar
+5. **Revisar video** — cuando status = `awaiting_review` → tab → reproductor + formulario de feedback + botón **Exportar a Drive** → botón Aprobar
 6. **Aprendizajes** — si aprobado, el Curator genera learnings y propone diff a la skill → UI muestra diff por hunks → usuario acepta/rechaza cada uno
 
 ---
@@ -212,6 +217,104 @@ Los archivos editables están en una allowlist en `main.py` (`_ALLOWED_SKILL_FIL
 
 ---
 
+## Formato del video (YouTube vs TikTok)
+
+El campo `format` del manifest controla el comportamiento de todos los agentes de generación. **No hay campo `audience`** — fue reemplazado por `format`.
+
+### `backend/tools/format_context.py`
+
+Dos funciones exportadas:
+- `get_planning_context(fmt: str) -> str` — reglas narrativas/estructurales para Planner y Beat Writer
+- `get_coding_context(fmt: str) -> str` — configuración Manim + safe zones para el Coder
+
+### Comportamiento por formato
+
+| Aspecto | YouTube | TikTok |
+|---------|---------|--------|
+| Aspect ratio | 16:9 (1920×1080) | 9:16 (1080×1920) |
+| Manim config | defaults | `config.pixel_width=1080; config.pixel_height=1920; config.frame_width=9; config.frame_height=16` en cada scene_NN.py |
+| Narrativa | Análítica, estructura progresiva | Retención hiperactiva, hook primeros 3s |
+| Safe zones | Todo el canvas | x ∈ [-3.5, 3.5], y ∈ [-4.5, 5.0] (evitar bordes) |
+| Duración beats | Normal | `self.wait() ≤ 0.3s` entre animaciones |
+
+El Coder recibe `format_context=get_coding_context(fmt)` inyectado en su prompt, que incluye las instrucciones de `config` que debe poner al inicio de cada archivo.
+
+---
+
+## Exportar video a Google Drive
+
+### Componente: `ui/components/export-to-drive-button.tsx`
+
+Flujo OAuth 2.0 token model (no server-side):
+1. Carga dinámicamente Google Identity Services (`accounts.google.com/gsi/client`)
+2. Solicita token con scope `drive.file` (solo puede acceder a archivos que él mismo crea)
+3. Fetcha el MP4 del backend local (`GET /projects/{id}/video`)
+4. Sube a Drive vía multipart upload (`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`)
+5. Retorna `webViewLink` — enlace directo al archivo en Drive
+
+**5 estados del botón:** idle → authorizing → fetching → uploading → success/error
+
+### Configuración requerida
+
+El archivo `ui/.env.local` (gitignoreado) debe contener:
+```
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=984294178550-phqpuc3u38j77rdjfj0uek7if7maqmdc.apps.googleusercontent.com
+```
+
+Si este archivo no existe, el botón no funcionará (mostrará error de client_id faltante). No commitear este archivo — contiene credenciales OAuth.
+
+### Dónde aparece en la UI
+
+En `ui/app/project/[slug]/page.tsx`, dentro del bloque `project?.final_video`, hay una barra inferior al reproductor con el formato label + `<ExportToDriveButton>`.
+
+---
+
+## Debug Logging (`backend/harness/debug_log.py`)
+
+Cada pipeline crea un log de texto en `projects/<id>/logs/pipeline_YYYYMMDDTHHMMSS.log`. Este archivo es la fuente de verdad para diagnosticar fallos. Cuando algo falle, pide al usuario el path del log y léelo.
+
+### API del módulo
+
+```python
+from harness import debug_log
+
+debug_log.new_run(project_id)          # inicio del pipeline → crea nuevo archivo
+debug_log.ensure_run(project_id)       # continuación → reutiliza o crea
+debug_log.pipeline_start(project_id, manifest)
+debug_log.pipeline_end(project_id, status, elapsed)
+debug_log.stage(project_id, "planner")
+debug_log.info(project_id, "mensaje")
+debug_log.warning(project_id, "mensaje")
+debug_log.error(project_id, "mensaje", exc)   # incluye traceback si exc no es None
+debug_log.agent_call(...)              # prompts completos (truncados a 6000 chars)
+debug_log.agent_done(...)              # output completo (truncado a 8000 chars)
+debug_log.agent_retry(...)
+debug_log.agent_failed(...)
+debug_log.guardrail_violated(...)
+debug_log.subprocess_result(...)       # cmd + stdout + stderr (truncado a 10000 chars)
+debug_log.ui_state(project_id, description, f5_note="")   # snapshot visual de la UI
+```
+
+### `ui_state()` — snapshots visuales
+
+Además del logging técnico, el orquestador llama a `debug_log.ui_state()` en cada transición para describir qué vería el usuario en pantalla en ese momento (qué nodos están activos, qué tabs aparecen, qué botones) y qué mostraría la UI si hiciera F5. Esto permite diagnosticar bugs de UI sin tener que reproducir el estado manualmente.
+
+### Dónde se llama `new_run` vs `ensure_run`
+
+- `new_run`: solo en `run_pipeline()` → crea archivo fresco al inicio de cada pipeline
+- `ensure_run`: en `run_pipeline_after_plugins()`, `run_scene_revision()`, `run_finalize()`, `run_curator()` → reutiliza el archivo existente o crea uno nuevo si se llaman en standalone (resume, revision sin pipeline previo)
+
+### Límites de truncado
+
+| Campo | Límite |
+|-------|--------|
+| System prompt | 2 000 chars |
+| User prompt | 6 000 chars |
+| Output del agente | 8 000 chars |
+| Subprocess stdout/stderr | 10 000 chars |
+
+---
+
 ## Comunicación frontend ↔ backend
 
 ### REST endpoints clave
@@ -240,7 +343,7 @@ outline_ready, beats_ready,
 scene_started, render_ok, render_failed,
 frames_extracted, qa_ok, qa_issue, qa_degraded,
 scene_preview_ready, scene_revising, scene_approved, scenes_all_approved,
-finalizing, edit_done,
+scenes_all_rendered, finalizing, edit_done,
 review_submitted, curator_done, patch_applied,
 log, error
 ```
@@ -271,7 +374,7 @@ Prioridad del onClick (decidido en este orden):
   // Campos de video (null hasta que el usuario lanza start-video):
   "idea": "Explica la derivada en un punto",
   "lang": "es",
-  "audience": "high school",
+  "format": "youtube | tiktok",                // ← antes era "audience"
   "target_length": "60s",
   "voice_profile": null,
   "export_langs": [],
@@ -307,6 +410,9 @@ Prioridad del onClick (decidido en este orden):
 | Curator propone diffs, el usuario aprueba | Las skills son contexto crítico — no se modifican en silencio |
 | Proyectos y videos son entidades separadas | El usuario puede crear el proyecto y configurar el video más tarde |
 | Per-scene review con revise/approve | El usuario aprueba escena por escena antes del render final -qh |
+| TikTok: config Manim en el scene_file, no en el comando | Cada `manim` CLI es un proceso fresh — el Coder pone `config.pixel_width/height` al principio del archivo y se aplica sin cambiar el comando de render |
+| Drive export: OAuth token model en el cliente | Sin servidor OAuth — el token se obtiene en el navegador con Google Identity Services; scope `drive.file` minimiza permisos |
+| Debug log por pipeline, no global | Permite aislar fallos por proyecto sin mezclar trazas; un archivo por run hace más fácil adjuntarlo para diagnóstico |
 
 ---
 
@@ -362,6 +468,7 @@ Capa que envuelve a todos los agentes. Implementa los principios de *awesome-har
 | `graders.py` | Cascada deterministic → LLM-judge | Anthropic eval taxonomy |
 | `evals.py` | Suite offline con `pass@1` / `pass^k` | Non-determinism handling |
 | `telemetry.py` | Métricas OTel gen-ai (cost, latency, tokens) | Observabilidad |
+| `debug_log.py` | Log de debug por proyecto + UI state snapshots | Diagnosticabilidad |
 
 ### Cómo añadir un agente nuevo
 
