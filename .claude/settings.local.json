@@ -10,7 +10,16 @@
       "WebFetch(domain:humanlayer.dev)",
       "PowerShell(cd C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\ui; npx tsc --noEmit; \"tsc=$LASTEXITCODE\"; npx eslint . --ext .ts,.tsx 2>&1 | Select-Object -Last 15; \"eslint=$LASTEXITCODE\")",
       "PowerShell(python -c \"import py_compile; py_compile.compile\\('backend/claude_runner.py', doraise=True\\); print\\('OK'\\)\")",
-      "PowerShell(\\(Get-Content CLAUDE.md | Measure-Object -Line\\).Lines)"
+      "PowerShell(\\(Get-Content CLAUDE.md | Measure-Object -Line\\).Lines)",
+      "PowerShell(Get-Item *)",
+      "PowerShell(Select-String -Path \"C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\projects\\\\primero-video\\\\logs\\\\pipeline_20260523T113532.log\" -Pattern \"^\\\\d{4}-\\\\d{2}-\\\\d{2}\\\\s+\\\\d+:\\\\d+:\\\\d+\\\\.\\\\d+\\\\s+ERROR\" | Select-Object -First 20 | ForEach-Object { $_.LineNumber.ToString\\(\\) + \": \" + $_.Line })",
+      "PowerShell(Select-String *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell($py='C:\\\\Users\\\\hugaz\\\\scoop\\\\apps\\\\miniconda3\\\\current\\\\python.exe'; & $py -c \"import ast, sys; [ast.parse\\(open\\(p,encoding='utf-8'\\).read\\(\\), p\\) for p in ['backend/main.py','backend/orchestrator.py','backend/harness/prompts.py','.agents/skills/manim/scripts/render_verify.py']]; print\\('OK'\\)\")",
+      "PowerShell(Get-Content *)",
+      "PowerShell($env:MANIM_VERIFY_SKIP_TTS='1'; $py='C:\\\\Users\\\\hugaz\\\\scoop\\\\apps\\\\miniconda3\\\\current\\\\python.exe'; $t0=Get-Date; & $py 'C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\.agents\\\\skills\\\\manim\\\\scripts\\\\render_verify.py' 'C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\projects\\\\derivadas\\\\scenes\\\\scene_01.py' 'Scene01' 2>&1 | Select-Object -First 30; \"elapsed: $\\(\\(Get-Date\\) - $t0\\)\")",
+      "PowerShell($env:MANIM_VERIFY_SKIP_TTS='1'; $py='C:\\\\Users\\\\hugaz\\\\scoop\\\\apps\\\\miniconda3\\\\current\\\\python.exe'; $t0=Get-Date; & $py 'C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\.agents\\\\skills\\\\manim\\\\scripts\\\\render_verify.py' 'C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\projects\\\\derivadas\\\\scenes\\\\scene_01.py' 'Scene01' 2>&1 | Select-Object -Last 25; \"elapsed: $\\(\\(Get-Date\\) - $t0\\)\")",
+      "PowerShell($env:PYTHONPATH='C:\\\\Users\\\\hugaz\\\\AppData\\\\Local\\\\Temp\\\\manim_dbg'; $t0=Get-Date; & 'C:\\\\Users\\\\hugaz\\\\scoop\\\\apps\\\\miniconda3\\\\current\\\\python.exe' -m manim -ql --save_last_frame 'C:\\\\Users\\\\hugaz\\\\Documents\\\\proyectoManim\\\\projects\\\\derivadas\\\\scenes\\\\scene_01.py' Scene01 2>&1 | Select-Object -First 60; \"elapsed: $\\(\\(Get-Date\\) - $t0\\)\"; $env:PYTHONPATH=$null)"
     ]
   },
   "enabledPlugins": {

@@ -71,6 +71,7 @@ proyectoManim/
 │       ├── plugin_context.py        ← construye el contexto de plugins inyectado en prompts
 │       ├── scene_utils.py           ← helpers comunes (e.g. get_scene_name)
 │       ├── format_context.py        ← contexto de formato (YouTube vs TikTok) para agentes
+│       ├── voice_context.py         ← genera init string de TTS (ElevenLabs/gTTS) para el Coder
 │       └── skill_diff.py            ← genera/aplica diffs a archivos de skill
 │
 ├── ui/                              ← Next.js App Router
@@ -91,7 +92,8 @@ proyectoManim/
 │   │   ├── pipeline-view.tsx        ← nodos animados en tiempo real (tab Ejecución)
 │   │   ├── flow-diagram.tsx         ← diagrama vertical estático (tab Vista del flujo)
 │   │   ├── skill-editor.tsx         ← modal editor de archivos de skill
-│   │   └── export-to-drive-button.tsx ← botón exportar video final a Google Drive
+│   │   ├── export-to-drive-button.tsx ← botón exportar video final a Google Drive
+│   │   └── agent-metrics-panel.tsx  ← tabla calls/tokens/coste por agente (tab Ejecución)
 │   └── lib/api.ts                   ← cliente REST + WebSocket hook
 │
 └── projects/<slug>/                 ← generado en runtime, en .gitignore parcial
@@ -113,7 +115,7 @@ proyectoManim/
 ## Flujo de usuario
 
 1. **Crear proyecto** — sidebar → "Nuevo proyecto" → modal pide `nombre` + `descripción` → proyecto en estado `draft`
-2. **Configurar video** — dentro del proyecto, tab "Vista del flujo" → formulario con idea, idioma, **formato (YouTube/TikTok)**, duración, voz → `POST /projects/{id}/start-video`
+2. **Configurar video** — dentro del proyecto, tab "Vista del flujo" → formulario con idea, idioma, **formato (YouTube/TikTok)**, duración, voz, **ciclos QA (0–3)** → `POST /projects/{id}/start-video`
 3. **Pipeline corre** — tab "Ejecución" muestra nodos animados en tiempo real vía WebSocket
 4. **Plugins** — el Researcher propone plugins → UI los muestra con checkboxes → usuario aprueba → se instalan con pip
 5. **Revisar video** — cuando status = `awaiting_review` → tab → reproductor + formulario de feedback + botón **Exportar a Drive** → botón Aprobar
@@ -149,7 +151,7 @@ Cada video es una invocación fresh de `claude -p --no-session-persistence`. Nin
 | **Planner** | `agents/planner.py` | sonnet | **— (sin tools)** | `SKILL.md` (+ `3b1b-style.md` si la idea lo menciona) — inline |
 | **Beat Writer** | `agents/beat_writer.py` | sonnet | **— (sin tools)** | `references/narration.md`, `templates/voiceover.py` — inline |
 | **Coder** | `agents/coder.py` | opus | **— (sin tools)** | `SKILL.md` + `api-cheatsheet.md` + `templates/voiceover.py` + `narration.md` + `troubleshooting.md` (+ `3b1b-style.md` condicional) — inline |
-| **Visual QA** | `agents/visual_qa.py` | opus | `Read,Glob` (Read multimodal sobre PNG + troubleshooting.md) | `troubleshooting.md` (vía tool) |
+| **Visual QA** | `agents/visual_qa.py` | sonnet | `Read,Glob` (Read multimodal sobre PNG + troubleshooting.md) | `troubleshooting.md` (vía tool) |
 | **Editor** | `agents/editor.py` | — (solo ffmpeg) | — | — |
 | **Curator** | `agents/curator.py` | sonnet | **— (sin tools)** | `SKILL.md`, `troubleshooting.md` — inline |
 
@@ -178,19 +180,28 @@ Por cada escena (PARALELO, hasta 4 workers):
     ↓ grade_scene_renderable (hasta 3 ciclos de fix con Coder.fix)
   render -ql  →  preview.mp4 (audio gTTS ya embebido)
   extract_frames  →  6 PNG
-  Visual QA  →  qa_notes.md
-    ↓ si needs_fix: Coder aplica fix_hint (hasta 3 ciclos)
+  [si max_qa_cycles > 0]:
+    Visual QA  →  qa_notes.md
+      ↓ si needs_fix: Coder aplica fix_hint (hasta max_qa_cycles ciclos)
+  [si max_qa_cycles == 0]: QA omitido, escena pasa directamente a awaiting_review
      ↓
-(pausa — usuario revisa CADA escena: approve / revise con feedback)
+[si skip_scene_review=false]:
+  (pausa — usuario revisa CADA escena: approve / revise con feedback)
+[si skip_scene_review=true]:
+  Auto-aprueba todas las escenas con status=awaiting_review → status=approved
+  Emite scene_approved por cada una → lanza run_finalize directamente (sin pausa humana)
+  Requiere al menos 1 escena aprobada; las escenas falladas se saltan igual
      ↓
-Editor (no LLM)  →  render -qh + concat  →  final/video_{lang}.mp4
+Editor (no LLM)  →  render -qh (timeout=600s) + concat  →  final/video_{lang}.mp4
      ↓ (pausa — usuario revisa video final y aprueba)
 Curator  →  learnings/notes.md + skill_patch.diff
      ↓ (usuario acepta/rechaza hunks en UI)
 skill file actualizado
 ```
 
-**No hay Narrator separado.** El audio se genera dentro del propio render de Manim vía `manim-voiceover` + `GTTSService`, beat a beat. El plugin se autoinstala al confirmar plugins (`tools.plugin_installer.ensure_installed`).
+**No hay Narrator separado.** El audio se genera dentro del propio render de Manim vía `manim-voiceover` + `GTTSService` (o `ElevenLabsService`), beat a beat. El plugin se autoinstala al confirmar plugins (`tools.plugin_installer.ensure_installed`).
+
+**TTS backend seleccionable:** `start-video` acepta `tts_backend="elevenlabs"` + `elevenlabs_voice_id`. `tools/voice_context.py` genera el init string correcto para el Coder. ElevenLabs **siempre** debe inicializarse con `transcription_model=None` (ver Quirk #6).
 
 ### Cómo las skills se leen
 
@@ -243,6 +254,16 @@ El Coder recibe `format_context=get_coding_context(fmt)` inyectado en su prompt,
 
 ## Exportar video a Google Drive
 
+### Setup (una vez por instalación)
+
+1. Ve a [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → Crear credencial → **ID de cliente OAuth 2.0** → tipo **Aplicación web**
+2. Añade `http://localhost:3000` en *Authorized JavaScript origins*
+3. Crea `ui/.env.local` con:
+   ```
+   NEXT_PUBLIC_GOOGLE_CLIENT_ID=<tu-client-id>.apps.googleusercontent.com
+   ```
+   Si omites este paso el botón muestra un error pero el resto de la app funciona con normalidad.
+
 ### Componente: `ui/components/export-to-drive-button.tsx`
 
 Flujo OAuth 2.0 token model (no server-side):
@@ -254,14 +275,6 @@ Flujo OAuth 2.0 token model (no server-side):
 
 **5 estados del botón:** idle → authorizing → fetching → uploading → success/error
 
-### Configuración requerida
-
-El archivo `ui/.env.local` (gitignoreado) debe contener:
-```
-NEXT_PUBLIC_GOOGLE_CLIENT_ID=984294178550-phqpuc3u38j77rdjfj0uek7if7maqmdc.apps.googleusercontent.com
-```
-
-Si este archivo no existe, el botón no funcionará (mostrará error de client_id faltante). No commitear este archivo — contiene credenciales OAuth.
 
 ### Dónde aparece en la UI
 
@@ -331,6 +344,9 @@ Además del logging técnico, el orquestador llama a `debug_log.ui_state()` en c
 | POST | `/projects/{id}/learnings/apply` | Aplica un hunk de diff a la skill |
 | GET | `/projects/{id}/video` | Sirve el mp4 final |
 | GET/PUT | `/skills/{path}` | Lee/escribe archivos de skill (editor) |
+| GET | `/projects/{id}/metrics` | Métricas agregadas por agente (calls, tokens, coste, retries) |
+| GET | `/projects/{id}/trace` | Log completo de eventos (JSONL en memoria) |
+| GET | `/projects/{id}/grades` | Resultados de todos los graders |
 | WS | `/ws/{project_id}` | Stream de eventos del pipeline |
 
 ### WebSocket events (backend → frontend)
@@ -389,6 +405,8 @@ Prioridad del onClick (decidido en este orden):
       "error": "..."                           // si status=failed
     }
   },
+  "max_qa_cycles": 2,                          // 0 = salta QA; default 2; guardado desde StartVideoRequest
+  "skip_scene_review": false,                  // true = auto-aprueba todas las escenas OK y lanza finalize sin pausa humana
   "final_video": "projects/.../final/video_es.mp4"
 }
 ```
@@ -413,6 +431,10 @@ Prioridad del onClick (decidido en este orden):
 | TikTok: config Manim en el scene_file, no en el comando | Cada `manim` CLI es un proceso fresh — el Coder pone `config.pixel_width/height` al principio del archivo y se aplica sin cambiar el comando de render |
 | Drive export: OAuth token model en el cliente | Sin servidor OAuth — el token se obtiene en el navegador con Google Identity Services; scope `drive.file` minimiza permisos |
 | Debug log por pipeline, no global | Permite aislar fallos por proyecto sin mezclar trazas; un archivo por run hace más fácil adjuntarlo para diagnóstico |
+| `max_qa_cycles` configurable (0–3) en el manifest | 0 salta Visual QA completamente (Coder → render directo); valores altos ralentizan pero corrigen más artefactos visuales. Aplica también en `run_scene_revision`. Constante de fallback `MAX_QA_CYCLES_DEFAULT=2` en `orchestrator.py` para manifests viejos |
+| `skip_scene_review` en el manifest | Cuando `true`, tras `_run_scenes_parallel` se auto-aprueban todas las escenas `awaiting_review` y se lanza `run_finalize` sin pausa humana. Útil para pruebas automatizadas end-to-end |
+| `editor.py` usa `subprocess.run(..., timeout=600)` | Sin timeout, el proceso `manim -qh` cuelga indefinidamente si hay un `input()` bloqueante dentro del render (e.g., ElevenLabsService sin `transcription_model=None`). 600s es suficiente para renders largos en hardware lento |
+| Métricas por agente visibles en la UI | `AgentMetricsPanel` en el tab Ejecución muestra calls/tokens/duración/coste est. polling `GET /projects/{id}/metrics` cada 15s mientras el pipeline corre. Los tokens son chars/4 (estimación) y el coste est. es informativo — no aplica con Claude Pro |
 
 ---
 
@@ -451,6 +473,9 @@ Estos son detalles no obvios de cómo invocamos `claude -p` que ya nos rompieron
 3. **`--verbose` es obligatorio cuando `--output-format=stream-json`** (CLI 2.1.x). La combinación `--print --output-format=stream-json` sin `--verbose` falla al instante con un mensaje claro pero los reintentos no aportan nada — se añade automáticamente en `run_with_tools` cuando hay `on_event`.
 4. **Guard contra stdout vacío con returncode 0** — la CLI a veces sale OK sin producir nada. `_exec_json` detecta `stdout` vacío y lanza un mensaje explícito en vez de dejar que `json.loads(None/"")` peté con un `TypeError` críptico.
 5. **`set_stream_emit` es per-thread (threading.local)**. Cualquier agente cuya llamada deba surfar líneas al panel de la UI necesita que su thread tenga el emitter registrado. Lo hacen: `_run_scene_initial` (threads de escenas) y `run_pipeline_after_plugins` (thread principal stage-2).
+6. **`ElevenLabsService` siempre con `transcription_model=None`**. Su `__init__` tiene `transcription_model="base"` como default → activa `set_transcription("base")` → intenta `import stable_whisper` → falla → llama `prompt_ask_missing_extras()` → llama `input()` → bloquea indefinidamente cuando `stable_whisper` no está instalado. `tools/voice_context.py` genera siempre `ElevenLabsService(..., transcription_model=None)`. El stub de `render_verify.py` también reemplaza `__init__` vía `_patch_concrete`.
+7. **`sitecustomize.py` generado por `render_verify.py` debe escribirse con `encoding="utf-8"` + cabecera `# -*- coding: utf-8 -*-`**. En Windows el default es cp1252; los caracteres no-ASCII del stub (e.g. `—`) se corrompen y producen `SyntaxError: invalid character` al interpretar el archivo.
+8. **`render_verify.py` requiere `ELEVEN_API_KEY` en entorno antes de parchear ElevenLabs**. `manim_voiceover/services/elevenlabs.py` llama `create_dotenv_elevenlabs()` a nivel de módulo al importarse, que invoca `input()` si la clave no existe. El stub pone `_os.environ["ELEVEN_API_KEY"] = "stub_key_verify_only"` antes de `_patch_concrete("manim_voiceover.services.elevenlabs", ...)` para evitar el bloqueo.
 
 ---
 

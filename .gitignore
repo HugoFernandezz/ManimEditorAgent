@@ -11,12 +11,12 @@ build/
 venv/
 .env
 
-# Projects (videos and renders are large)
-projects/*/renders/
-projects/*/final/
-projects/*/audio/*.wav
-projects/*/scenes/media/
-projects/*/events.jsonl
+# Projects (runtime data — no commitear proyectos locales)
+projects/*/
+!projects/.gitkeep
+
+# Claude Code — settings locales (rutas de máquina, permisos personales)
+.claude/settings.local.json
 
 # Manim generated media (runtime artifacts)
 backend/media/
